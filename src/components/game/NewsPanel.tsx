@@ -2,14 +2,15 @@
 import type { NewsItem } from "@/lib/types";
 import { sentimentColor, cn } from "@/lib/utils";
 import { formatDate } from "@/lib/utils";
-import { AlertTriangle, TrendingUp, TrendingDown, Zap, Eye } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { AlertTriangle, TrendingUp, TrendingDown, Eye, Zap } from "lucide-react";
 
 interface NewsPanelProps {
   news: NewsItem[];
   title?: string;
 }
 
-const SIGNAL_ICONS: Record<string, React.FC<{ size: number; className?: string }>> = {
+const SIGNAL_ICONS: Record<string, LucideIcon> = {
   injury_concern: AlertTriangle,
   positive: TrendingUp,
   negative: TrendingDown,
