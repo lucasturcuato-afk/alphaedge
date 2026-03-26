@@ -31,11 +31,11 @@ const LEAGUE_ITEMS = [
 ];
 
 const TOOL_ITEMS = [
-  { label: "News Feed", href: "#", icon: Newspaper },
-  { label: "Simulations", href: "#", icon: Activity },
-  { label: "Line History", href: "#", icon: TrendingUp },
-  { label: "Backtesting", href: "#", icon: BarChart3 },
-  { label: "Model Info", href: "#", icon: Database },
+  { label: "News Feed", href: "/news", icon: Newspaper },
+  { label: "Simulations", href: "/simulations", icon: Activity },
+  { label: "Line History", href: "/line-history", icon: TrendingUp },
+  { label: "Backtesting", href: "/backtesting", icon: BarChart3 },
+  { label: "Model Info", href: "/model-info", icon: Database },
 ];
 
 export function Sidebar() {
