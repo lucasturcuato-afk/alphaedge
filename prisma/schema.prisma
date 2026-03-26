@@ -1,0 +1,166 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Sport {
+  id     String @id @default(cuid())
+  name   String @unique // "NBA", "NCAAMB", "MLB"
+  slug   String @unique
+  teams  Team[]
+  games  Game[]
+}
+
+model Team {
+  id           String   @id @default(cuid())
+  name         String
+  shortName    String
+  abbreviation String
+  city         String
+  sport        Sport    @relation(fields: [sportId], references: [id])
+  sportId      String
+  homeGames    Game[]   @relation("HomeTeam")
+  awayGames    Game[]   @relation("AwayTeam")
+  players      Player[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Player {
+  id          String   @id @default(cuid())
+  name        String
+  position    String
+  number      String?
+  team        Team     @relation(fields: [teamId], references: [id])
+  teamId      String
+  sport       String
+  status      String   @default("active") // active | questionable | out | day-to-day
+  imageUrl    String?
+  props       Prop[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Game {
+  id            String       @id @default(cuid())
+  sport         Sport        @relation(fields: [sportId], references: [id])
+  sportId       String
+  homeTeam      Team         @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  homeTeamId    String
+  awayTeam      Team         @relation("AwayTeam", fields: [awayTeamId], references: [id])
+  awayTeamId    String
+  gameTime      DateTime
+  status        String       @default("scheduled") // scheduled | live | final
+  venue         String?
+  weather       Json?        // for MLB
+  lines         Line[]
+  predictions   Prediction[]
+  props         Prop[]
+  simulations   Simulation[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+}
+
+model Line {
+  id         String   @id @default(cuid())
+  game       Game     @relation(fields: [gameId], references: [id])
+  gameId     String
+  sportsbook String   // DraftKings | FanDuel | BetMGM | Caesars
+  homeSpread Float
+  awaySpread Float
+  total      Float
+  homeML     Int
+  awayML     Int
+  timestamp  DateTime @default(now())
+}
+
+model Prediction {
+  id                String   @id @default(cuid())
+  game              Game     @relation(fields: [gameId], references: [id])
+  gameId            String
+  modelVersion      String
+  predictedWinner   String   // teamId
+  winProbHome       Float
+  winProbAway       Float
+  projectedTotal    Float
+  projectedSpread   Float
+  confidenceScore   Float    // 0-100
+  fairOddsHome      Int
+  fairOddsAway      Int
+  edgeHome          Float    // vs book
+  edgeAway          Float
+  supportingFactors Json     // array of factor objects
+  riskFactors       Json
+  reasoning         String
+  modelInputs       Json
+  createdAt         DateTime @default(now())
+}
+
+model Prop {
+  id              String     @id @default(cuid())
+  player          Player     @relation(fields: [playerId], references: [id])
+  playerId        String
+  game            Game       @relation(fields: [gameId], references: [id])
+  gameId          String
+  propType        String     // points | rebounds | assists | strikeouts | home_runs | hits
+  line            Float
+  overOdds        Int
+  underOdds       Int
+  projectedValue  Float
+  overProbability Float
+  underProbability Float
+  confidenceScore Float
+  fairOddsOver    Int
+  fairOddsUnder   Int
+  edge            Float
+  sentiment       String     @default("neutral") // positive | negative | neutral
+  factors         Json
+  sportsbook      String
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+}
+
+model Simulation {
+  id              String   @id @default(cuid())
+  game            Game     @relation(fields: [gameId], references: [id])
+  gameId          String
+  iterations      Int      @default(10000)
+  homeWinPct      Float
+  awayWinPct      Float
+  avgTotal        Float
+  avgHomeScore    Float
+  avgAwayScore    Float
+  spreadCoverPct  Float    // % home covers
+  distribution    Json     // score distribution buckets
+  percentiles     Json     // p10, p25, p50, p75, p90
+  runAt           DateTime @default(now())
+}
+
+model NewsItem {
+  id         String   @id @default(cuid())
+  headline   String
+  summary    String
+  source     String
+  url        String?
+  sport      String
+  tags       String[] // player names, team names
+  sentiment  String   // positive | negative | neutral | mixed
+  signals    Json     // {injuryFlag, usageFlag, momentumFlag}
+  publishedAt DateTime
+  createdAt  DateTime @default(now())
+}
+
+model SentimentSnapshot {
+  id         String   @id @default(cuid())
+  entityId   String   // playerId or teamId
+  entityType String   // player | team
+  source     String   // reddit | twitter | news
+  score      Float    // -1 to 1
+  volume     Int
+  signals    Json
+  snapshotAt DateTime @default(now())
+}

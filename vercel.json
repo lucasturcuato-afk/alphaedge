@@ -1,0 +1,10 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "env": {
+    "THE_ODDS_API_KEY": "@the_odds_api_key",
+    "BALLDONTLIE_API_KEY": "@balldontlie_api_key"
+  }
+}
