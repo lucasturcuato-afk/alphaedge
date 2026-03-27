@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 import { MOCK_PROPS } from "@/lib/mock-data/props";
 import { PropCard } from "@/components/player/PropCard";
 import { Card } from "@/components/ui/Card";
-import { gradeEdge, formatOdds, formatSpread } from "@/lib/utils";
+import { gradeEdge } from "@/lib/utils";
 import { SportBadge } from "@/components/ui/Badge";
 import Link from "next/link";
 import { Trophy, Zap, Target, RefreshCw } from "lucide-react";
