@@ -223,3 +223,17 @@ export async function refreshLinesOnly(
     return {};
   }
 }
+export async function getSocialNews(
+  _query: string,
+  _sport: string,
+  _limit: number
+): Promise<NewsItem[]> {
+  // Reddit/social news — not yet integrated; return mock news with today's date
+  const today = new Date().toISOString().slice(0, 10);
+  return MOCK_NEWS.slice(0, _limit).map(n => ({
+    ...n,
+    publishedAt: today + n.publishedAt.slice(10),
+  }));
+}
+
+
