@@ -1,0 +1,11 @@
+name: Daily Data Refresh
+on:
+  schedule:
+    - cron: '0 14 * * *'
+  workflow_dispatch:
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel Redeploy
+        run: curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
