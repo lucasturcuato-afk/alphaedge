@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 import { MOCK_PROPS } from "@/lib/mock-data/props";
 import { PropCard } from "@/components/player/PropCard";
 import { Card } from "@/components/ui/Card";
-import { gradeEdge } from "@/lib/utils";
+import { gradeEdge, formatOdds, formatSpread } from "@/lib/utils";
 import { SportBadge } from "@/components/ui/Badge";
 import Link from "next/link";
 import { Trophy, Zap, Target, RefreshCw } from "lucide-react";
@@ -102,8 +102,9 @@ export default function BestBetsPage() {
                 const team = homeBetter ? game.homeTeam : game.awayTeam;
                 const spread = homeBetter ? game.lines?.[0]?.homeSpread : game.lines?.[0]?.awaySpread;
                 const ml = homeBetter ? game.lines?.[0]?.homeML : game.lines?.[0]?.awayML;
-                const grade = gradeEdge(maxEdge);
-                const gradeColor = grade === "S" ? "#00FF87" : grade === "A" ? "#00FF87" : grade === "B" ? "#F59E0B" : "#94A3B8";
+                const gradeObj = gradeEdge(maxEdge);
+                const grade = gradeObj.grade;
+                const gradeColor = gradeObj.color;
 
                 return (
                   <Link key={game.id} href={`/game/${game.id}`}>
@@ -124,7 +125,7 @@ export default function BestBetsPage() {
                         </div>
                         <div className="text-right shrink-0">
                           <div className="text-[9px] font-mono text-text-muted">EDGE</div>
-                          <div className="text-sm font-mono font-bold" style={{ color: gradeColor }}>+{maxEdge.toFixed(1)}%</div>
+                          <div className="text-sm font-mono font-bold" style={{ color: gradeObj.color }}>+{maxEdge.toFixed(1)}%</div>
                         </div>
                       </div>
                     </div>

@@ -37,7 +37,7 @@ export default function PropsPage() {
       .filter(p => p.edge >= minEdge)
       .sort((a, b) => {
         if (sortKey === "edge") return b.edge - a.edge;
-        if (sortKey === "confidence") return b.confidence - a.confidence;
+        if (sortKey === "confidence") return b.confidenceScore - a.confidenceScore;
         if (sortKey === "line") return b.line - a.line;
         if (sortKey === "projectedValue") return b.projectedValue - a.projectedValue;
         return 0;
