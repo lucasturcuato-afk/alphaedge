@@ -1,126 +1,225 @@
 // src/lib/api/aggregator.ts
-// Bulletproof aggregator — uses BallDontLie for real NBA games.
-// Odds API quota exhausted; falls back to mock only when BDL returns 0.
+/**
+ * Data Aggregator
+ * Combines odds, stats, MLB, and social data into unified Game/Player objects.
+ * Falls back to mock data when API keys aren't set.
+ *
+ * This is the single import point for all API data in API routes.
+ */
 
 import type { Game, Prop, NewsItem } from "@/lib/types";
+import { fetchOdds, parseBookLines, SPORT_KEYS } from "./odds";
+import { getTodayGames, getPlayerSeasonAvg, getPlayerRecentStats, parseBDLSeasonAvg, parseBDLTrendData, parseBDLPlayer } from "./balldontlie";
+import { getTodayMLBSchedule, parseMLBWeather, parseMLBGameStatus, getMLBRecord } from "./mlb";
+import { searchReddit, getRedditSentiment } from "./reddit";
 import { MOCK_GAMES } from "@/lib/mock-data/games";
 import { MOCK_NEWS } from "@/lib/mock-data/news";
 
-const BDL_KEY = process.env.BALLDONTLIE_API_KEY;
-const BASE = "https://api.balldontlie.io/v1";
+const HAS_ODDS_KEY = !!process.env.THE_ODDS_API_KEY;
+const HAS_BDL_KEY = !!process.env.BALLDONTLIE_API_KEY;
 
-// Minimal BDL types
-interface BDLGame {
-  id: number; date: string; status: string; season: number; postseason: boolean;
-  home_team: { id: number; full_name: string; name: string; abbreviation: string; city: string; };
-  visitor_team: { id: number; full_name: string; name: string; abbreviation: string; city: string; };
-  home_team_score: number; visitor_team_score: number;
-}
+// ── Games ─────────────────────────────────────────────────────────────────────
 
-async function fetchBDLGames(): Promise<BDLGame[]> {
-  if (!BDL_KEY) { console.log("[Agg] No BDL key"); return []; }
-  const today = new Date().toISOString().slice(0, 10);
-  const url = `${BASE}/games?dates[]=${today}&per_page=30`;
-  try {
-    const res = await fetch(url, {
-      headers: { Authorization: BDL_KEY },
-      next: { revalidate: 300 },
-    });
-    if (!res.ok) { console.error("[Agg] BDL error:", res.status); return []; }
-    const data = await res.json();
-    const games: BDLGame[] = data?.data ?? [];
-    console.log(`[Agg] BDL returned ${games.length} games for ${today}`);
-    return games;
-  } catch (e) {
-    console.error("[Agg] BDL fetch threw:", e);
-    return [];
+/**
+ * Get today's games for all supported sports.
+ * Uses real APIs when keys are present, falls back to mock data.
+ */
+export async function getTodayAllGames(): Promise<Game[]> {
+  if (!HAS_ODDS_KEY && !HAS_BDL_KEY) {
+    console.log("[Aggregator] No API keys — using mock data");
+    return MOCK_GAMES;
   }
+
+  const results: Game[] = [];
+
+  // ── NBA games ──────────────────────────────────────────────────────────────
+  try {
+    const [bdlGames, nbaOdds] = await Promise.all([
+      HAS_BDL_KEY ? getTodayGames() : Promise.resolve([]),
+      HAS_ODDS_KEY ? fetchOdds("NBA") : Promise.resolve([]),
+    ]);
+
+    for (const game of bdlGames) {
+      // Find matching odds entry by team name
+      const oddsEntry = nbaOdds.find(
+        (o) =>
+          o.home_team.includes(game.home_team.full_name.split(" ").pop()!) ||
+          o.away_team.includes(game.visitor_team.full_name.split(" ").pop()!)
+      );
+
+      const lines = oddsEntry ? parseBookLines(oddsEntry) : [];
+
+      const g: Game = {
+        id: `nba-${game.id}`,
+        sport: "NBA",
+        homeTeam: {
+          id: String(game.home_team.id),
+          name: game.home_team.full_name,
+          shortName: game.home_team.name,
+          abbreviation: game.home_team.abbreviation,
+          city: game.home_team.city,
+          sport: "NBA",
+        },
+        awayTeam: {
+          id: String(game.visitor_team.id),
+          name: game.visitor_team.full_name,
+          shortName: game.visitor_team.name,
+          abbreviation: game.visitor_team.abbreviation,
+          city: game.visitor_team.city,
+          sport: "NBA",
+        },
+        gameTime: game.date,
+        status: game.status === "Final" ? "final" : "scheduled",
+        lines,
+      };
+
+      results.push(g);
+    }
+  } catch (e) {
+    console.error("[Aggregator] NBA fetch error:", e);
+    // Don't add mock games — let MLB results show through
+  }
+
+  // ── MLB games ──────────────────────────────────────────────────────────────
+  try {
+    const [mlbGames, mlbOdds] = await Promise.all([
+      getTodayMLBSchedule(),
+      HAS_ODDS_KEY ? fetchOdds("MLB") : Promise.resolve([]),
+    ]);
+
+    for (const game of mlbGames) {
+      const oddsEntry = mlbOdds.find(
+        (o) =>
+          o.home_team.includes(game.teams.home.team.name.split(" ").pop()!) ||
+          o.away_team.includes(game.teams.away.team.name.split(" ").pop()!)
+      );
+
+      const lines = oddsEntry ? parseBookLines(oddsEntry) : [];
+      const weather = parseMLBWeather(game);
+      const status = parseMLBGameStatus(game.status.abstractGameState);
+
+      const g: Game = {
+        id: `mlb-${game.gamePk}`,
+        sport: "MLB",
+        homeTeam: {
+          id: String(game.teams.home.team.id),
+          name: game.teams.home.team.name,
+          shortName: game.teams.home.team.name.split(" ").pop()!,
+          abbreviation: game.teams.home.team.name.substring(0, 3).toUpperCase(),
+          city: game.teams.home.team.name.split(" ").slice(0, -1).join(" "),
+          sport: "MLB",
+          record: getMLBRecord(game.teams.home),
+        },
+        awayTeam: {
+          id: String(game.teams.away.team.id),
+          name: game.teams.away.team.name,
+          shortName: game.teams.away.team.name.split(" ").pop()!,
+          abbreviation: game.teams.away.team.name.substring(0, 3).toUpperCase(),
+          city: game.teams.away.team.name.split(" ").slice(0, -1).join(" "),
+          sport: "MLB",
+          record: getMLBRecord(game.teams.away),
+        },
+        gameTime: game.gameDate,
+        status,
+        venue: game.venue.name,
+        weather,
+        lines,
+      };
+
+      results.push(g);
+    }
+  } catch (e) {
+    console.error("[Aggregator] MLB fetch error:", e);
+    // Don't add mock games — let NBA results show through
+  }
+
+  // If we got no results at all, fall back to mock
+  if (results.length === 0) {
+    console.log("[Aggregator] No live results — using mock data");
+    return MOCK_GAMES;
+  }
+
+  return results;
 }
 
-function bdlToGame(g: BDLGame): Game {
-  const gameDate = new Date().toISOString().slice(0, 10);
-  const gameTime = new Date(`${gameDate}T19:00:00.000Z`).toISOString();
+// ── Player data ───────────────────────────────────────────────────────────────
+
+/**
+ * Enrich a player with live season averages and recent trends.
+ */
+export async function enrichPlayerData(bdlPlayerId: number) {
+  if (!HAS_BDL_KEY) return null;
+
+  const [seasonAvg, recentStats] = await Promise.all([
+    getPlayerSeasonAvg(bdlPlayerId),
+    getPlayerRecentStats(bdlPlayerId, 10),
+  ]);
+
   return {
-    id: `nba-bdl-${g.id}`,
-    sport: "NBA",
-    awayTeam: {
-      id: String(g.visitor_team.id),
-      name: g.visitor_team.full_name,
-      shortName: g.visitor_team.name,
-      abbreviation: g.visitor_team.abbreviation,
-      city: g.visitor_team.city,
-      sport: "NBA",
-    },
-    homeTeam: {
-      id: String(g.home_team.id),
-      name: g.home_team.full_name,
-      shortName: g.home_team.name,
-      abbreviation: g.home_team.abbreviation,
-      city: g.home_team.city,
-      sport: "NBA",
-    },
-    gameTime,
-    status: g.status === "Final" ? "final" : "scheduled",
-    lines: [],
-    prediction: {
-      id: `pred-bdl-${g.id}`,
-      gameId: `nba-bdl-${g.id}`,
-      modelVersion: "v2.1",
-      predictedWinner: g.home_team.abbreviation.toLowerCase(),
-      winProbHome: 0.54,
-      winProbAway: 0.46,
-      projectedTotal: 224.5,
-      projectedSpread: -3.5,
-      confidenceScore: 54,
-      fairOddsHome: -117,
-      fairOddsAway: 97,
-      edgeHome: 1.2,
-      edgeAway: -0.8,
-      supportingFactors: [{ label: "Home Court", impact: "medium", direction: "positive", value: "Home", description: `${g.home_team.name} at home` }],
-      riskFactors: [],
-      reasoning: `${g.home_team.name} host ${g.visitor_team.name}. Model gives home team a slight edge.`,
-      createdAt: new Date().toISOString(),
-    },
+    seasonAverages: seasonAvg ? parseBDLSeasonAvg(seasonAvg) : null,
+    trends: recentStats.length ? parseBDLTrendData(recentStats) : null,
   };
 }
 
-export async function getTodayAllGames(): Promise<Game[]> {
-  const bdlGames = await fetchBDLGames();
-  
-  if (bdlGames.length > 0) {
-    console.log(`[Agg] Using ${bdlGames.length} live BDL games`);
-    const liveGames = bdlGames.map(bdlToGame);
-    // Merge with mock MLB/NCAA games (with today's date)
-    const today = new Date().toISOString().slice(0, 10);
-    const mockOtherSports = MOCK_GAMES.filter(g => g.sport !== "NBA").map(g => ({
-      ...g,
-      gameTime: today + g.gameTime.slice(10),
-      prediction: g.prediction ? { ...g.prediction, createdAt: new Date().toISOString() } : undefined,
-    }));
-    return [...liveGames, ...mockOtherSports];
+// ── News & Social ─────────────────────────────────────────────────────────────
+
+/**
+ * Get social news for a player/team.
+ * Pulls from Reddit with NLP signal extraction.
+ */
+export async function getSocialNews(
+  entityName: string,
+  sport: "NBA" | "NCAAMB" | "MLB",
+  limit: number = 8
+): Promise<NewsItem[]> {
+  try {
+    const items = await searchReddit(
+      entityName,
+      sport === "NBA"
+        ? ["nba", "sportsbook"]
+        : sport === "NCAAMB"
+        ? ["collegebasketball", "sportsbook"]
+        : ["baseball", "sportsbook"],
+      limit
+    );
+
+    // Add sport tag to all items
+    return items.map((item) => ({ ...item, sport }));
+  } catch {
+    // Fall back to mock news
+    return MOCK_NEWS.filter((n) => n.sport === sport).slice(0, limit);
   }
-
-  console.log("[Agg] BDL returned 0 games — using full mock data");
-  const today = new Date().toISOString().slice(0, 10);
-  return MOCK_GAMES.map(g => ({
-    ...g,
-    gameTime: today + g.gameTime.slice(10),
-  }));
 }
 
-export async function getTodayProps(): Promise<Prop[]> {
-  const { MOCK_PROPS } = await import("@/lib/mock-data/props");
-  return MOCK_PROPS;
+/**
+ * Get aggregated sentiment for a player.
+ */
+export async function getPlayerSentiment(
+  playerName: string,
+  sport: "NBA" | "NCAAMB" | "MLB"
+) {
+  return getRedditSentiment(playerName, sport);
 }
 
-export async function getTodayNews(): Promise<NewsItem[]> {
-  const today = new Date().toISOString().slice(0, 10);
-  return MOCK_NEWS.map(n => ({ ...n, publishedAt: today + n.publishedAt.slice(10) }));
-}
+// ── Odds-only refresh ─────────────────────────────────────────────────────────
 
-export async function getPlayerStats(_playerId: string): Promise<null> { return null; }
-export async function getPlayerProps(_playerId: string): Promise<Prop[]> { return []; }
-export async function simulateGame(_gameId: string, _iterations: number): Promise<null> { return null; }
-export async function getLineHistory(_gameId: string): Promise<[]> { return []; }
-export async function searchGamesPlayers(_q: string): Promise<Game[]> { return []; }
-export async function getOddsComparison(_gameId: string): Promise<{}> { return {}; }
+/**
+ * Refresh just the lines for existing games (cheaper API call).
+ * Call this on a 5-minute interval instead of full game refresh.
+ */
+export async function refreshLinesOnly(
+  sport: "NBA" | "NCAAMB" | "MLB"
+): Promise<Record<string, ReturnType<typeof parseBookLines>>> {
+  if (!HAS_ODDS_KEY) return {};
+
+  try {
+    const odds = await fetchOdds(sport, ["h2h", "spreads", "totals"]);
+    const result: Record<string, ReturnType<typeof parseBookLines>> = {};
+    for (const game of odds) {
+      result[game.id] = parseBookLines(game);
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
