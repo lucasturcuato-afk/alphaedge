@@ -1,0 +1,22 @@
+name: Daily Data Refresh
+
+on:
+  schedule:
+    # 9 AM ET every day (14:00 UTC)
+    - cron: '0 14 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel Production Redeploy
+        run: |
+          curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}" \
+            -H "Content-Type: application/json" \
+            --fail \
+            --silent \
+            --show-error
+        
+      - name: Log refresh time
+        run: echo "AlphaEdge refreshed at $(date -u '+%Y-%m-%d %H:%M UTC')"
