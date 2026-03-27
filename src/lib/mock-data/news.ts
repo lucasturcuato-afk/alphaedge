@@ -14,7 +14,7 @@ export const MOCK_NEWS: NewsItem[] = [
     tags: ["Cade Cunningham", "Detroit Pistons", "New Orleans Pelicans"],
     sentiment: "injury_concern",
     signals: { injuryFlag: true, usageFlag: false, momentumFlag: false, fatigueFlag: false, publicHype: false },
-    publishedAt: "2026-03-26T09:00:00.000Z",
+    publishedAt: new Date().toISOString().slice(0,10) + "T09:00:00.000Z",
   },
   {
     id: "news-002",
@@ -26,7 +26,7 @@ export const MOCK_NEWS: NewsItem[] = [
     tags: ["Trey Murphy III", "New Orleans Pelicans"],
     sentiment: "positive",
     signals: { injuryFlag: false, usageFlag: true, momentumFlag: true, fatigueFlag: false, publicHype: true },
-    publishedAt: "2026-03-26T08:30:00.000Z",
+    publishedAt: new Date().toISOString().slice(0,10) + "T08:30:00.000Z",
   },
   {
     id: "news-003",
@@ -38,7 +38,7 @@ export const MOCK_NEWS: NewsItem[] = [
     tags: ["Franz Wagner", "Orlando Magic", "Sacramento Kings"],
     sentiment: "injury_concern",
     signals: { injuryFlag: true, usageFlag: false, momentumFlag: false, fatigueFlag: false, publicHype: false },
-    publishedAt: "2026-03-26T10:00:00.000Z",
+    publishedAt: new Date().toISOString().slice(0,10) + "T10:00:00.000Z",
   },
   {
     id: "news-004",
@@ -50,7 +50,7 @@ export const MOCK_NEWS: NewsItem[] = [
     tags: ["NCAA Tournament", "Sweet 16", "Arizona", "Houston", "Purdue"],
     sentiment: "neutral",
     signals: { injuryFlag: false, usageFlag: false, momentumFlag: false, fatigueFlag: false, publicHype: false },
-    publishedAt: "2026-03-26T11:00:00.000Z",
+    publishedAt: new Date().toISOString().slice(0,10) + "T11:00:00.000Z",
   },
   {
     id: "news-005",
@@ -62,7 +62,7 @@ export const MOCK_NEWS: NewsItem[] = [
     tags: ["Jalen Brunson", "New York Knicks", "Charlotte Hornets", "LaMelo Ball"],
     sentiment: "neutral",
     signals: { injuryFlag: false, usageFlag: false, momentumFlag: true, fatigueFlag: false, publicHype: false },
-    publishedAt: "2026-03-26T07:00:00.000Z",
+    publishedAt: new Date().toISOString().slice(0,10) + "T07:00:00.000Z",
   },
   {
     id: "news-006",
@@ -74,7 +74,7 @@ export const MOCK_NEWS: NewsItem[] = [
     tags: ["Los Angeles Dodgers", "Arizona Diamondbacks"],
     sentiment: "neutral",
     signals: { injuryFlag: false, usageFlag: false, momentumFlag: false, fatigueFlag: false, publicHype: false },
-    publishedAt: "2026-03-26T12:00:00.000Z",
+    publishedAt: new Date().toISOString().slice(0,10) + "T12:00:00.000Z",
   },
   {
     id: "news-007",
@@ -86,6 +86,6 @@ export const MOCK_NEWS: NewsItem[] = [
     tags: ["Arizona Wildcats", "Arkansas Razorbacks", "Sweet 16"],
     sentiment: "positive",
     signals: { injuryFlag: false, usageFlag: false, momentumFlag: true, fatigueFlag: false, publicHype: true },
-    publishedAt: "2026-03-26T06:00:00.000Z",
+    publishedAt: new Date().toISOString().slice(0,10) + "T06:00:00.000Z",
   },
 ];
