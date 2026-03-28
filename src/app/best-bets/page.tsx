@@ -68,8 +68,13 @@ export default function BestBetsPage() {
       </div>
 
       {loading && (
-        <div className="flex items-center justify-center py-12 text-text-muted text-xs font-mono">
-          <RefreshCw size={14} className="animate-spin mr-2" />Fetching today&apos;s games...
+        <div className="space-y-3">
+          <div className="text-[10px] font-mono text-text-muted flex items-center gap-2">
+            <RefreshCw size={11} className="animate-spin" />Analyzing {0} games across NBA, NCAA &amp; MLB...
+          </div>
+          {[1,2,3,4,5].map(i => (
+            <div key={i} className="h-16 bg-bg-card border border-bg-border rounded-lg animate-pulse" />
+          ))}
         </div>
       )}
 
