@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { MOCK_PROPS } from "@/lib/mock-data/props";
+// props fetched dynamically from /api/props
 import { SportBadge } from "@/components/ui/Badge";
 import Link from "next/link";
 import { TrendingUp, Shield, Star, ChevronRight, AlertTriangle, Flame, RefreshCw } from "lucide-react";
@@ -37,17 +37,24 @@ export default function HighProbPage() {
       .catch(() => { import("@/lib/mock-data/games").then(m => { setGames(m.MOCK_GAMES); setLoading(false); }); });
   }, []);
 
-  const PROP_PICKS = [...MOCK_PROPS]
-    .map(p => ({ prop: p, hitProb: Math.max(p.overProbability, p.underProbability), side: p.overProbability >= p.underProbability ? "OVER" : "UNDER" }))
-    .filter(p => p.hitProb >= 0.55).sort((a, b) => b.hitProb - a.hitProb).slice(0, 10);
+  const [props, setProps] = useState<any[]>([]);
+  useEffect(() => {
+    fetch("/api/props", { cache: "no-store" })
+      .then(r => r.json())
+      .then(d => setProps(d.props ?? []))
+      .catch(() => {});
+  }, []);
+  const PROP_PICKS = props
+    .map((p:any) => ({ prop: p, hitProb: Math.max(p.overProbability, p.underProbability), side: p.overProbability >= p.underProbability ? "OVER" : "UNDER" }))
+    .filter((p:any) => p.hitProb >= 0.55).sort((a:any,b:any) => b.hitProb - a.hitProb).slice(0, 10);
 
-  const GAME_PICKS = games.filter(g => g.prediction).map(g => {
+  const GAME_PICKS = games.filter(g => g.prediction && g.status !== 'final').map(g => {
     const pred = g.prediction!;
     const homeWins = pred.winProbHome > pred.winProbAway;
     return { game: g, pred, winProb: homeWins ? pred.winProbHome : pred.winProbAway, favTeam: homeWins ? g.homeTeam : g.awayTeam, undTeam: homeWins ? g.awayTeam : g.homeTeam, favSpread: homeWins ? g.lines?.[0]?.homeSpread : g.lines?.[0]?.awaySpread, favML: homeWins ? g.lines?.[0]?.homeML : g.lines?.[0]?.awayML };
   }).sort((a, b) => b.winProb - a.winProb);
 
-  const TOTAL_PLAYS = games.filter(g => g.prediction && g.lines?.[0]).map(g => {
+  const TOTAL_PLAYS = games.filter(g => g.prediction && g.lines?.[0] && g.status !== 'final').map(g => {
     const diff = g.prediction!.projectedTotal - g.lines![0].total;
     return { game: g, diff, side: diff < 0 ? "UNDER" : "OVER", absDiff: Math.abs(diff) };
   }).filter(t => t.absDiff >= 2.5).sort((a, b) => b.absDiff - a.absDiff).slice(0, 6);
