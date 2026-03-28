@@ -54,6 +54,8 @@ export interface ModelPrediction {
   reasoning: string;
 }
 
+import type { InjuredPlayer, TeamInjuryImpact } from './injuries';
+
 // ESPN team stats endpoint
 const ESPN_TEAM_STATS = (teamId: string) =>
   `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/statistics`;
@@ -402,6 +404,8 @@ export async function buildNBAPrediction(
   vegasAwayML?: number,
   vegasSpread?: number,
   vegasTotal?: number,
+  homeInjuryImpact?: TeamInjuryImpact,
+  awayInjuryImpact?: TeamInjuryImpact,
 ): Promise<{
   prediction: any;
   homeProfile: TeamProfile | null;
@@ -435,6 +439,20 @@ export async function buildNBAPrediction(
     };
   }
 
+  // Apply injury deductions to profiles before computing
+  if (homeInjuryImpact && homeInjuryImpact.pointsLost > 0) {
+    homeProfile.avgPts = Math.max(90, homeProfile.avgPts - homeInjuryImpact.pointsLost);
+    homeProfile.offEfficiency = Math.max(90, homeProfile.offEfficiency - homeInjuryImpact.pointsLost * 0.8);
+    homeProfile.netEfficiency = homeProfile.offEfficiency - homeProfile.defEfficiency;
+    console.log(`[Model] ${homeAbbr} injury adj: -${homeInjuryImpact.pointsLost.toFixed(1)} pts (${homeInjuryImpact.description})`);
+  }
+  if (awayInjuryImpact && awayInjuryImpact.pointsLost > 0) {
+    awayProfile.avgPts = Math.max(90, awayProfile.avgPts - awayInjuryImpact.pointsLost);
+    awayProfile.offEfficiency = Math.max(90, awayProfile.offEfficiency - awayInjuryImpact.pointsLost * 0.8);
+    awayProfile.netEfficiency = awayProfile.offEfficiency - awayProfile.defEfficiency;
+    console.log(`[Model] ${awayAbbr} injury adj: -${awayInjuryImpact.pointsLost.toFixed(1)} pts (${awayInjuryImpact.description})`);
+  }
+
   const model = computePrediction(homeProfile, awayProfile, vegasHomeML, vegasAwayML, vegasSpread, vegasTotal);
 
   const prediction = {
@@ -458,5 +476,25 @@ export async function buildNBAPrediction(
     createdAt: new Date().toISOString(),
   };
 
+  // Add injury factors to prediction
+  if (homeInjuryImpact && homeInjuryImpact.pointsLost >= 4) {
+    prediction.supportingFactors.unshift({
+      label: `${homeAbbr} Injury Report`,
+      impact: homeInjuryImpact.pointsLost >= 8 ? 'high' : 'medium',
+      direction: 'negative',
+      value: `~${homeInjuryImpact.pointsLost.toFixed(0)} PPG lost`,
+      description: homeInjuryImpact.description,
+    });
+  }
+  if (awayInjuryImpact && awayInjuryImpact.pointsLost >= 4) {
+    prediction.supportingFactors.unshift({
+      label: `${awayAbbr} Injury Report`,
+      impact: awayInjuryImpact.pointsLost >= 8 ? 'high' : 'medium',
+      direction: 'negative',
+      value: `~${awayInjuryImpact.pointsLost.toFixed(0)} PPG lost`,
+      description: awayInjuryImpact.description,
+    });
+  }
+  prediction.supportingFactors = prediction.supportingFactors.slice(0, 5);
   return { prediction, homeProfile, awayProfile };
 }

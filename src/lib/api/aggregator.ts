@@ -1,11 +1,12 @@
 // src/lib/api/aggregator.ts
-// NBA: Real independent model using team efficiency stats, form, splits
-// NCAA: ESPN + Vegas lines (no NCAA efficiency stats API)
-// MLB: ESPN + Vegas lines
+// NBA: Real model + live injury report from ESPN
+// NCAA + MLB: ESPN with real DK odds
+
 import type { Game, Prop, NewsItem } from "@/lib/types";
 import { getTodayNCAAGames } from "./ncaa-stats";
 import { getTodayMLBGames } from "./mlb-stats";
 import { buildNBAPrediction } from "./nba-model";
+import { fetchInjuryReport, getTeamInjuryImpact } from "./injuries";
 import { MOCK_NEWS } from "@/lib/mock-data/news";
 
 const ESPN_NBA = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard";
@@ -14,13 +15,16 @@ function parseML(s: string): number { return parseInt(s.replace(/[^-\d]/g,""),10
 
 async function buildNBAGames(): Promise<Game[]> {
   try {
-    const res = await fetch(ESPN_NBA, { headers:{Accept:"application/json"}, next:{revalidate:300} });
+    // Fetch scoreboard + injury report in parallel
+    const [res, injuries] = await Promise.all([
+      fetch(ESPN_NBA, { headers:{Accept:"application/json"}, next:{revalidate:300} }),
+      fetchInjuryReport(),
+    ]);
     if (!res.ok) return [];
     const data = await res.json();
     const events: any[] = data.events ?? [];
-    console.log(`[NBA] ${events.length} games today`);
+    console.log(`[NBA] ${events.length} games | ${injuries.filter(p=>p.status==='Out').length} players Out`);
 
-    // Build all predictions in parallel
     const games = await Promise.all(events.map(async (event: any) => {
       const comp = event.competitions[0];
       const homeC = comp.competitors?.find((c:any)=>c.homeAway==="home");
@@ -30,21 +34,24 @@ async function buildNBAGames(): Promise<Game[]> {
       const homeAbbr = homeC?.team?.abbreviation ?? "";
       const awayAbbr = awayC?.team?.abbreviation ?? "";
 
-      // Extract Vegas lines for comparison
       const vegasSpread = odds?.pointSpread?.home?.close?.line ? parseFloat(odds.pointSpread.home.close.line) : undefined;
       const vegasAwaySpread = odds?.pointSpread?.away?.close?.line ? parseFloat(odds.pointSpread.away.close.line) : undefined;
       const vegasTotal = odds?.overUnder ?? undefined;
       const vegasHomeML = odds?.moneyline?.home?.close?.odds ? parseML(odds.moneyline.home.close.odds) : undefined;
       const vegasAwayML = odds?.moneyline?.away?.close?.odds ? parseML(odds.moneyline.away.close.odds) : undefined;
 
-      // Build real independent model prediction
+      // Get injury impact for each team
+      const homeInjury = getTeamInjuryImpact(injuries, homeAbbr);
+      const awayInjury = getTeamInjuryImpact(injuries, awayAbbr);
+
+      // Build real model prediction with injury adjustments
       const { prediction } = await buildNBAPrediction(
         homeAbbr, awayAbbr,
         vegasHomeML, vegasAwayML,
         vegasSpread, vegasTotal,
+        homeInjury, awayInjury,
       );
 
-      // Set game-specific ID
       prediction.id = `pred-nba-${event.id}`;
       prediction.gameId = `nba-espn-${event.id}`;
 
@@ -71,7 +78,10 @@ async function buildNBAGames(): Promise<Game[]> {
         venue: comp.venue?.fullName ?? "TBD",
         lines,
         prediction,
-      } as Game;
+        // Store injury summaries on game object for UI display
+        homeInjuries: homeInjury.injuredPlayers,
+        awayInjuries: awayInjury.injuredPlayers,
+      } as any;
     }));
 
     return games;
