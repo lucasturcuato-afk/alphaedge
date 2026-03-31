@@ -1,62 +1,133 @@
-// src/lib/api/nba-model.ts — Model v3.1 FINAL
-// Correct math: uses avgPts directly, estimates defense from win% + block/steal rates,
-// Monte Carlo simulation for win prob and total distribution,
-// Pythagorean expectation, rest days, home/away splits, injury adjustments.
+// src/lib/api/nba-model.ts — Model v4.0
+// Uses stats.nba.com for real opponent-adjusted ORTG/DRTG/NetRtg/Pace
+// ESPN for schedule, splits, rest days
+// Monte Carlo simulation for spread/total distribution
+// This is how real sports analytics models work.
 
 import type { TeamInjuryImpact } from './injuries';
 
 export interface TeamProfile {
   id: string; abbreviation: string; record: string;
   wins: number; losses: number; winPct: number;
-  avgPts: number;        // points scored per game (real)
-  estPtsAllowed: number; // estimated points allowed per game
+  // From stats.nba.com — real opponent-adjusted ratings
+  offRtg: number;   // points scored per 100 possessions (opp-adjusted)
+  defRtg: number;   // points allowed per 100 possessions (opp-adjusted)
+  netRtg: number;   // offRtg - defRtg
+  pace: number;     // possessions per 48 min
+  // From ESPN — raw box score stats
+  avgPts: number;
   fgPct: number; threePct: number; threeRate: number;
   ftPct: number; avgAst: number; avgTov: number;
-  avgReb: number; avgBlk: number; avgStl: number;
-  pythWinPct: number;    // Pythagorean win% (pts^13.91 / (pts^13.91 + ptsAllowed^13.91))
-  pace: number;
-  netPts: number;        // avgPts - estPtsAllowed
+  avgBlk: number; avgStl: number;
+  // Derived
+  pythWinPct: number;  // from offRtg/defRtg
+  // From schedule
   last10Wins: number;
   homeWins: number; homeLosses: number;
   awayWins: number; awayLosses: number;
   lastGameDate: string;
 }
 
-const ESPN_STATS    = (id:string) => `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${id}/statistics`;
-const ESPN_SCHEDULE = (id:string) => `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${id}/schedule?seasontype=2&limit=82`;
+// stats.nba.com — real ORTG/DRTG for all 30 teams
+const NBA_STATS_URL =
+  'https://stats.nba.com/stats/leaguedashteamstats' +
+  '?MeasureType=Advanced&PerMode=PerGame&Season=2024-25' +
+  '&SeasonType=Regular+Season&LeagueID=00&LastNGames=0' +
+  '&Month=0&OpponentTeamID=0&PaceAdjust=N&Period=0&PORound=0&TeamID=0';
 
-const ESPN_IDS: Record<string,string> = {
-  ATL:'1', BOS:'2', BKN:'17', CHA:'30', CHI:'4',  CLE:'5',  DAL:'6',  DEN:'7',
-  DET:'8', GSW:'9', HOU:'10', IND:'11', LAC:'12', LAL:'13', MEM:'29', MIA:'14',
-  MIL:'15',MIN:'16',NOP:'3',  NYK:'18', OKC:'25', ORL:'19', PHI:'20', PHX:'21',
-  POR:'22',SAC:'23',SAS:'24', TOR:'28', UTA:'26', WAS:'27',
-  NY:'18', GS:'9', SA:'24', NO:'3', UTAH:'26',
+const NBA_STATS_HEADERS = {
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Origin': 'https://www.nba.com',
+  'Referer': 'https://www.nba.com/',
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+  'x-nba-stats-origin': 'stats',
+  'x-nba-stats-token': 'true',
 };
 
-// League averages 2025-26
-const LG_PTS = 115.8;
-const LG_ALLOWED = 115.8; // symmetric
-const LG_TOV = 13.5;
-const LG_FG = 47.1;
-const LG_3PCT = 36.8;
+// ESPN endpoints
+const ESPN_STATS    = (id:string) => `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${id}/statistics`;
+const ESPN_SCHEDULE = (id:string) => `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${id}/schedule?seasontype=2&limit=30`;
 
-let cache: Record<string,{p:TeamProfile;ts:number}> = {};
-const TTL = 2*60*60*1000;
+const ESPN_IDS: Record<string,string> = {
+  ATL:'1',BOS:'2',BKN:'17',CHA:'30',CHI:'4',CLE:'5',DAL:'6',DEN:'7',
+  DET:'8',GSW:'9',HOU:'10',IND:'11',LAC:'12',LAL:'13',MEM:'29',MIA:'14',
+  MIL:'15',MIN:'16',NOP:'3',NYK:'18',OKC:'25',ORL:'19',PHI:'20',PHX:'21',
+  POR:'22',SAC:'23',SAS:'24',TOR:'28',UTA:'26',WAS:'27',
+  NY:'18',GS:'9',SA:'24',NO:'3',UTAH:'26',
+};
+
+// NBA team name → abbreviation (for stats.nba.com matching)
+const NBA_NAME_TO_ABBR: Record<string,string> = {
+  'Atlanta Hawks':'ATL','Boston Celtics':'BOS','Brooklyn Nets':'BKN',
+  'Charlotte Hornets':'CHA','Chicago Bulls':'CHI','Cleveland Cavaliers':'CLE',
+  'Dallas Mavericks':'DAL','Denver Nuggets':'DEN','Detroit Pistons':'DET',
+  'Golden State Warriors':'GSW','Houston Rockets':'HOU','Indiana Pacers':'IND',
+  'LA Clippers':'LAC','Los Angeles Lakers':'LAL','Memphis Grizzlies':'MEM',
+  'Miami Heat':'MIA','Milwaukee Bucks':'MIL','Minnesota Timberwolves':'MIN',
+  'New Orleans Pelicans':'NOP','New York Knicks':'NYK','Oklahoma City Thunder':'OKC',
+  'Orlando Magic':'ORL','Philadelphia 76ers':'PHI','Phoenix Suns':'PHX',
+  'Portland Trail Blazers':'POR','Sacramento Kings':'SAC','San Antonio Spurs':'SAS',
+  'Toronto Raptors':'TOR','Utah Jazz':'UTA','Washington Wizards':'WAS',
+};
+
+// Cache for NBA stats (all 30 teams)
+let nbaStatsCache: Record<string, {offRtg:number;defRtg:number;netRtg:number;pace:number}> | null = null;
+let nbaStatsCacheTime = 0;
+const NBA_STATS_TTL = 6*60*60*1000;
+
+async function fetchAllNBAStats(): Promise<typeof nbaStatsCache> {
+  if (nbaStatsCache && Date.now()-nbaStatsCacheTime < NBA_STATS_TTL) return nbaStatsCache;
+  try {
+    const res = await fetch(NBA_STATS_URL, {
+      headers: NBA_STATS_HEADERS as any,
+      next: { revalidate: 21600 },
+    });
+    if (!res.ok) throw new Error(`NBA stats ${res.status}`);
+    const data = await res.json();
+    const { headers, rowSet } = data.resultSets[0];
+    const idx = (h:string) => headers.indexOf(h);
+    const result: Record<string,{offRtg:number;defRtg:number;netRtg:number;pace:number}> = {};
+    for (const row of rowSet) {
+      const name = String(row[idx('TEAM_NAME')]);
+      const abbr = NBA_NAME_TO_ABBR[name];
+      if (!abbr) continue;
+      result[abbr] = {
+        offRtg:  Number(row[idx('OFF_RATING')]),
+        defRtg:  Number(row[idx('DEF_RATING')]),
+        netRtg:  Number(row[idx('NET_RATING')]),
+        pace:    Number(row[idx('PACE')]),
+      };
+    }
+    console.log(`[Model v4] Loaded ${Object.keys(result).length} teams from stats.nba.com`);
+    nbaStatsCache = result;
+    nbaStatsCacheTime = Date.now();
+    return result;
+  } catch(e) {
+    console.error('[Model v4] stats.nba.com failed:', e);
+    return nbaStatsCache; // return stale cache if available
+  }
+}
+
+let profileCache: Record<string,{p:TeamProfile;ts:number}> = {};
+const PROFILE_TTL = 3*60*60*1000;
 
 async function fetchProfile(abbr: string): Promise<TeamProfile|null> {
-  const hit = cache[abbr];
-  if (hit && Date.now()-hit.ts < TTL) return hit.p;
+  const hit = profileCache[abbr];
+  if (hit && Date.now()-hit.ts < PROFILE_TTL) return hit.p;
 
   const id = ESPN_IDS[abbr];
-  if (!id) { console.warn(`[Model] No ESPN ID for "${abbr}"`); return null; }
+  if (!id) { console.warn(`[Model v4] No ESPN ID for "${abbr}"`); return null; }
 
   try {
-    const [sr, schr] = await Promise.all([
-      fetch(ESPN_STATS(id),    { next:{revalidate:7200} }),
-      fetch(ESPN_SCHEDULE(id), { next:{revalidate:7200} }),
+    // Fetch ESPN stats + schedule + NBA advanced stats in parallel
+    const [nbaStats, sr, schr] = await Promise.all([
+      fetchAllNBAStats(),
+      fetch(ESPN_STATS(id), { next:{revalidate:10800} }),
+      fetch(ESPN_SCHEDULE(id), { next:{revalidate:10800} }),
     ]);
-    if (!sr.ok) throw new Error(`Stats ${sr.status}`);
 
+    if (!sr.ok) throw new Error(`ESPN stats ${sr.status}`);
     const sd = await sr.json();
     const cats: any[] = sd.results?.stats?.categories ?? [];
     const g = (cat:string, stat:string): number => {
@@ -65,10 +136,10 @@ async function fetchProfile(abbr: string): Promise<TeamProfile|null> {
       return parseFloat(s?.displayValue??'0')||0;
     };
 
-    // Real offensive stats from ESPN
+    // ESPN box score stats
     const avgPts   = g('offensive','avgPoints');
     const fgPct    = g('offensive','fieldGoalPct');
-    const threePct = g('offensive','threePointFieldGoalPct') || g('offensive','threePointPct');
+    const threePct = g('offensive','threePointFieldGoalPct')||g('offensive','threePointPct');
     const ftPct    = g('offensive','freeThrowPct');
     const avgAst   = g('offensive','avgAssists');
     const avgTov   = g('offensive','avgTurnovers');
@@ -78,28 +149,32 @@ async function fetchProfile(abbr: string): Promise<TeamProfile|null> {
     const avgReb   = g('general','avgRebounds');
     const avgBlk   = g('defensive','avgBlocks');
     const avgStl   = g('defensive','avgSteals');
-    const astToRatio = g('general','assistTurnoverRatio') || (avgAst/Math.max(avgTov,1));
+    const threeRate = avgFGA>0 ? avg3PA/avgFGA : 0.38;
 
-    // Pace (Dean Oliver formula)
-    const avgOReb = avgReb * 0.27;
-    const pace = avgFGA + 0.44*avgFTA + avgTov - avgOReb;
-    const threeRate = avgFGA > 0 ? avg3PA/avgFGA : 0.38;
-    const ftRate    = avgFGA > 0 ? avgFTA/avgFGA : 0.28;
+    // stats.nba.com advanced ratings (real opponent-adjusted)
+    const nba = nbaStats?.[abbr];
+    const offRtg = nba?.offRtg ?? (avgPts / Math.max(1, avgFGA+0.44*avgFTA+avgTov-avgReb*0.27) * 100);
+    const defRtg = nba?.defRtg ?? (115.8 - (nba?.netRtg ?? 0));
+    const netRtg = nba?.netRtg ?? (offRtg - defRtg);
+    const pace   = nba?.pace   ?? (avgFGA + 0.44*avgFTA + avgTov - avgReb*0.27);
 
-    // Parse schedule for record, form, splits
+    // Schedule for splits and form
     let wins=0, losses=0, record='0-0';
     let last10Wins=0, homeWins=0, homeLosses=0, awayWins=0, awayLosses=0;
     let lastGameDate='';
-    let totalPtsAllowed=0, gamesWithScore=0;
 
     if (schr.ok) {
       const schd = await schr.json();
+      // Try multiple places for record
       const recItems = schd.team?.record?.items ?? [];
-      const overall  = recItems.find((r:any)=>r.type==='total');
+      const overall  = recItems.find((r:any)=>r.type==='total') ?? recItems[0];
       if (overall?.summary) {
         record = overall.summary;
-        [wins,losses] = record.split('-').map(Number);
+        const parts = record.split('-');
+        wins = parseInt(parts[0])||0;
+        losses = parseInt(parts[1])||0;
       }
+
       const events: any[] = schd.events ?? [];
       const done = events.filter((e:any)=>e.competitions?.[0]?.status?.type?.completed);
       if (done.length) lastGameDate = done[done.length-1]?.date ?? '';
@@ -110,63 +185,48 @@ async function fetchProfile(abbr: string): Promise<TeamProfile|null> {
         const awayC = comp.competitors.find((c:any)=>c.homeAway==='away');
         const isHome = homeC?.team?.id===id || homeC?.team?.abbreviation===abbr;
         const us  = isHome ? homeC : awayC;
-        const opp = isHome ? awayC : homeC;
         const won = us?.winner===true;
-        // Collect actual points allowed
-        const oppScore = parseInt(opp?.score??'0',10);
-        if (oppScore > 80) { totalPtsAllowed += oppScore; gamesWithScore++; }
-        if (isHome) { won ? homeWins++ : homeLosses++; }
-        else        { won ? awayWins++ : awayLosses++; }
-        if (i >= done.length-10 && won) last10Wins++;
+        if (isHome) { won?homeWins++:homeLosses++; } else { won?awayWins++:awayLosses++; }
+        if (i>=done.length-10 && won) last10Wins++;
       });
     }
 
-    const gp = wins+losses||74;
+    const gp = wins+losses || 74;
     const winPct = wins/gp;
 
-    // Estimated points allowed:
-    // Use real schedule data if we have enough games (>20), otherwise estimate from win%
-    let estPtsAllowed: number;
-    if (gamesWithScore >= 20) {
-      estPtsAllowed = totalPtsAllowed / gamesWithScore;
-    } else {
-      // Estimate: good teams allow fewer points
-      // Calibrated so that ~55% team allows ~112, ~45% team allows ~119
-      // Defense quality: steal rate and block rate add ~0.3 pts prevention each
-      const defBonus = (avgStl - 7.5) * 0.5 + (avgBlk - 4.5) * 0.35;
-      const winBonus = (winPct - 0.5) * 10;
-      estPtsAllowed = Math.max(105, Math.min(125, LG_ALLOWED - defBonus - winBonus));
-    }
-
-    const netPts = avgPts - estPtsAllowed;
-
-    // Pythagorean win% — NBA exponent 13.91
+    // Pythagorean from ORTG/DRTG (NBA exponent 13.91)
+    // Convert ratings to points: ortg × pace/100 ≈ pts per game
+    const estPts = offRtg * pace / 100;
+    const estPtsAllowed = defRtg * pace / 100;
     const exp = 13.91;
-    const pythWinPct = avgPts>0 && estPtsAllowed>0
-      ? Math.pow(avgPts,exp) / (Math.pow(avgPts,exp) + Math.pow(estPtsAllowed,exp))
+    const pythWinPct = estPts>0 && estPtsAllowed>0
+      ? Math.pow(estPts,exp)/(Math.pow(estPts,exp)+Math.pow(estPtsAllowed,exp))
       : winPct;
 
     const profile: TeamProfile = {
       id, abbreviation:abbr, record, wins, losses, winPct,
-      avgPts, estPtsAllowed,
-      fgPct, threePct, threeRate, ftPct, avgAst, avgTov,
-      avgReb, avgBlk, avgStl,
-      pythWinPct, pace, netPts,
+      offRtg, defRtg, netRtg, pace,
+      avgPts, fgPct, threePct, threeRate, ftPct,
+      avgAst, avgTov, avgBlk, avgStl,
+      pythWinPct,
       last10Wins, homeWins, homeLosses, awayWins, awayLosses, lastGameDate,
     };
 
-    console.log(`[Model v3.1] ${abbr}: ${record} | pts:${avgPts.toFixed(1)} allowed:${estPtsAllowed.toFixed(1)} net:${netPts.toFixed(1)} pyth:${Math.round(pythWinPct*100)}% L10:${last10Wins}-${10-last10Wins}`);
-    cache[abbr] = {p:profile, ts:Date.now()};
+    console.log(
+      `[Model v4] ${abbr}: ${record} | ORTG:${offRtg.toFixed(1)} DRTG:${defRtg.toFixed(1)} NET:${netRtg.toFixed(1)} PACE:${pace.toFixed(1)} ` +
+      `pts:${avgPts.toFixed(1)} L10:${last10Wins}-${10-last10Wins}`
+    );
+    profileCache[abbr] = {p:profile, ts:Date.now()};
     return profile;
   } catch(e) {
-    console.error(`[Model v3.1] Failed ${abbr}:`, e);
+    console.error(`[Model v4] Failed ${abbr}:`, e);
     return null;
   }
 }
 
-function restDays(lastDate:string): number {
-  if (!lastDate) return 2;
-  return Math.max(0, Math.floor((Date.now()-new Date(lastDate).getTime())/(86400000)));
+function restDays(d:string): number {
+  if (!d) return 2;
+  return Math.max(0, Math.floor((Date.now()-new Date(d).getTime())/86400000));
 }
 function restAdj(days:number): number {
   if (days===0) return -3.5;
@@ -175,250 +235,221 @@ function restAdj(days:number): number {
   return 0;
 }
 
-// Box-Muller normal random for Monte Carlo
+// Box-Muller Monte Carlo
 function normalRandom(mean:number, sd:number): number {
-  const u1 = Math.random(), u2 = Math.random();
-  const z = Math.sqrt(-2*Math.log(Math.max(u1,1e-10))) * Math.cos(2*Math.PI*u2);
-  return mean + z*sd;
+  const u1=Math.random(), u2=Math.random();
+  return mean + Math.sqrt(-2*Math.log(Math.max(u1,1e-10)))*Math.cos(2*Math.PI*u2)*sd;
 }
 
-interface SimResult {
-  homeWinPct: number;
-  avgHomeScore: number;
-  avgAwayScore: number;
-  avgTotal: number;
-  spreadCoverPct: number; // pct home covers vegas spread
-  overPct: number;
-  distribution: Array<{range:string; pct:number}>;
-}
-
-function runMonteCarlo(
-  homeExpected: number, awayExpected: number,
-  vegasSpread: number|undefined, vegasTotal: number|undefined,
-  iterations=10000
-): SimResult {
-  const GAME_SD = 11.5; // per-team std dev in NBA
-  let homeWins=0;
-  const totals: number[]=[], homeScores: number[]=[], awayScores: number[]=[];
-
-  for (let i=0; i<iterations; i++) {
-    const h = Math.round(normalRandom(homeExpected, GAME_SD));
-    const a = Math.round(normalRandom(awayExpected, GAME_SD));
-    homeScores.push(h); awayScores.push(a); totals.push(h+a);
-    if (h>a) homeWins++;
+function monteCarlo(homeExp:number, awayExp:number, vegasSpread?:number, vegasTotal?:number, n=10000) {
+  let hw=0; const tots:number[]=[], hs:number[]=[], as_:number[]=[];
+  const SD = 11.5;
+  for (let i=0;i<n;i++) {
+    const h=Math.round(normalRandom(homeExp,SD));
+    const a=Math.round(normalRandom(awayExp,SD));
+    hs.push(h); as_.push(a); tots.push(h+a);
+    if (h>a) hw++;
   }
-
-  const avg = (arr:number[]) => arr.reduce((s,x)=>s+x,0)/arr.length;
-  const avgHome = avg(homeScores);
-  const avgAway = avg(awayScores);
-  const avgTot  = avg(totals);
-
-  const spreadCovers = vegasSpread!==undefined
-    ? homeScores.filter((_,i)=>(homeScores[i]-awayScores[i])>-vegasSpread).length
-    : homeWins;
-  const overCount = vegasTotal!==undefined
-    ? totals.filter(t=>t>vegasTotal).length
-    : totals.filter(t=>t>avgTot).length;
-
-  // Build distribution in 8-pt buckets
-  const bucketSize = 8;
-  const buckets: Record<number,number>={};
-  totals.forEach(t=>{const b=Math.floor(t/bucketSize)*bucketSize; buckets[b]=(buckets[b]||0)+1;});
-  const distribution = Object.entries(buckets)
-    .sort(([a],[b])=>Number(a)-Number(b))
-    .map(([b,cnt])=>({range:`${b}-${Number(b)+bucketSize-1}`,pct:Number(((cnt/iterations)*100).toFixed(1))}));
-
+  const avg=(arr:number[])=>arr.reduce((s,x)=>s+x,0)/arr.length;
+  const covers=vegasSpread!==undefined ? hs.filter((_,i)=>(hs[i]-as_[i])>-vegasSpread).length : hw;
+  const overs=vegasTotal!==undefined ? tots.filter(t=>t>vegasTotal).length : tots.filter(t=>t>avg(tots)).length;
+  const buckets:Record<number,number>={};
+  tots.forEach(t=>{const b=Math.floor(t/8)*8;buckets[b]=(buckets[b]||0)+1;});
   return {
-    homeWinPct: Number(((homeWins/iterations)*100).toFixed(1)),
-    avgHomeScore: Number(avgHome.toFixed(1)),
-    avgAwayScore: Number(avgAway.toFixed(1)),
-    avgTotal: Number(avgTot.toFixed(1)),
-    spreadCoverPct: Number(((spreadCovers/iterations)*100).toFixed(1)),
-    overPct: Number(((overCount/iterations)*100).toFixed(1)),
-    distribution: distribution.slice(0,14),
+    homeWinPct:Number(((hw/n)*100).toFixed(1)),
+    avgHome:Number(avg(hs).toFixed(1)),
+    avgAway:Number(avg(as_).toFixed(1)),
+    avgTotal:Number(avg(tots).toFixed(1)),
+    spreadCoverPct:Number(((covers/n)*100).toFixed(1)),
+    overPct:Number(((overs/n)*100).toFixed(1)),
+    distribution:Object.entries(buckets).sort(([a],[b])=>Number(a)-Number(b))
+      .map(([b,c])=>({range:`${b}-${Number(b)+7}`,pct:Number(((c/n)*100).toFixed(1))})).slice(0,14),
   };
 }
 
-function winProbToML(p:number): number {
-  return p>=0.5 ? -Math.round((p/(1-p))*100) : Math.round(((1-p)/p)*100);
+function winProbToML(p:number):number {
+  return p>=0.5?-Math.round((p/(1-p))*100):Math.round(((1-p)/p)*100);
 }
 
 function compute(
-  home: TeamProfile, away: TeamProfile,
-  vegasHomeML?: number, vegasAwayML?: number,
-  vegasSpread?: number, vegasTotal?: number,
+  home:TeamProfile, away:TeamProfile,
+  vegasHomeML?:number, vegasAwayML?:number,
+  vegasSpread?:number, vegasTotal?:number,
 ) {
-  // ── Score projections using opponent-adjusted model ───────────────────────
-  // Home expected = (our offense × their defensive quality)
-  // Their def quality = estPtsAllowed / league avg (lower = better defense)
-  const awayDefFactor = away.estPtsAllowed / LG_ALLOWED; // >1 weak def, <1 strong def
-  const homeDefFactor = home.estPtsAllowed / LG_ALLOWED;
-  const homeBase = home.avgPts * awayDefFactor;
-  const awayBase = away.avgPts * homeDefFactor;
+  // Project scores using opponent-adjusted efficiency ratings
+  // Expected pts = (our ORTG / 100) × avg_pace × (their DRTG / league_DRTG_avg)
+  // League avg DRTG ≈ league avg ORTG ≈ 115.8
+  const LG_RTG = 115.8;
+  const avgPace = (home.pace + away.pace) / 2;
 
-  // Adjustments
+  // Home expected = our ORTG adjusted for their DRTG
+  // Their defensive quality factor: their DRTG / league avg (lower = better)
+  const homeOffAdj = (home.offRtg / LG_RTG);      // our offensive quality vs league
+  const awayDefAdj = (away.defRtg / LG_RTG);      // their defensive quality (>1 = weak)
+  const homeBase   = home.avgPts * homeOffAdj * awayDefAdj;
+
+  const awayOffAdj = (away.offRtg / LG_RTG);
+  const homeDefAdj = (home.defRtg / LG_RTG);
+  const awayBase   = away.avgPts * awayOffAdj * homeDefAdj;
+
+  // Situational adjustments
   const HOME_COURT   = 3.2;
-  const homeFormAdj  = (home.last10Wins - 5) * 0.5;
-  const awayFormAdj  = (away.last10Wins - 5) * 0.5;
-  const homeShoot    = (home.fgPct - LG_FG)  * 0.25;
-  const awayShoot    = (away.fgPct - LG_FG)  * 0.25;
-  const home3p       = (home.threeRate - 0.38) * home.avgPts * 0.06;
-  const away3p       = (away.threeRate - 0.38) * away.avgPts * 0.06;
-  const homeTov      = (LG_TOV - home.avgTov) * 1.0;
-  const awayTov      = (LG_TOV - away.avgTov) * 1.0;
-
+  const homeFormAdj  = (home.last10Wins-5)*0.5;
+  const awayFormAdj  = (away.last10Wins-5)*0.5;
+  const homeShoot    = (home.fgPct-47.0)*0.2;
+  const awayShoot    = (away.fgPct-47.0)*0.2;
+  const home3p       = (home.threeRate-0.38)*home.avgPts*0.05;
+  const away3p       = (away.threeRate-0.38)*away.avgPts*0.05;
+  const homeTov      = (13.5-home.avgTov)*0.9;
+  const awayTov      = (13.5-away.avgTov)*0.9;
   const homeRestDays = restDays(home.lastGameDate);
   const awayRestDays = restDays(away.lastGameDate);
   const homeRest     = restAdj(homeRestDays);
   const awayRest     = restAdj(awayRestDays);
+  const homeAtHomeGP = (home.homeWins+home.homeLosses)||1;
+  const awayOnRoadGP = (away.awayWins+away.awayLosses)||1;
+  const homeAtHomePct= home.homeWins/homeAtHomeGP;
+  const awayOnRoadPct= away.awayWins/awayOnRoadGP;
+  const homeSplit    = (homeAtHomePct-home.winPct)*4;
+  const awaySplit    = (awayOnRoadPct-away.winPct)*4;
+  const homePyth     = (home.pythWinPct-home.winPct)*3;
+  const awayPyth     = (away.pythWinPct-away.winPct)*3;
 
-  const homeAtHomeGP  = (home.homeWins+home.homeLosses)||1;
-  const awayOnRoadGP  = (away.awayWins+away.awayLosses)||1;
-  const homeAtHomePct = home.homeWins/homeAtHomeGP;
-  const awayOnRoadPct = away.awayWins/awayOnRoadGP;
-  const homeSplit     = (homeAtHomePct - home.winPct) * 5;
-  const awaySplit     = (awayOnRoadPct - away.winPct) * 5;
+  const homeExp = homeBase + HOME_COURT + homeFormAdj + homeShoot + home3p + homeTov + homeRest + homeSplit + homePyth;
+  const awayExp = awayBase +              awayFormAdj + awayShoot + away3p + awayTov + awayRest + awaySplit + awayPyth;
 
-  // Pythagorean adjustment (regress toward pyth from actual)
-  const homePyth = (home.pythWinPct - home.winPct) * 4;
-  const awayPyth = (away.pythWinPct - away.winPct) * 4;
-
-  const homeExpected = homeBase + HOME_COURT + homeFormAdj + homeShoot + home3p + homeTov + homeRest + homeSplit + homePyth;
-  const awayExpected = awayBase            + awayFormAdj + awayShoot + away3p + awayTov + awayRest + awaySplit + awayPyth;
-
-  // ── Monte Carlo simulation ────────────────────────────────────────────────
-  const sim = runMonteCarlo(homeExpected, awayExpected, vegasSpread, vegasTotal, 10000);
-
-  // Use Monte Carlo win% as primary probability (more robust than logistic)
+  // Monte Carlo simulation
+  const sim = monteCarlo(homeExp, awayExp, vegasSpread, vegasTotal, 10000);
   const homeWinProb = Math.max(0.05, Math.min(0.95, sim.homeWinPct/100));
-  const awayWinProb = 1 - homeWinProb;
-  const modelSpread = Number(-(homeExpected - awayExpected).toFixed(1));
+  const awayWinProb = 1-homeWinProb;
+  const modelSpread = Number((awayExp-homeExp).toFixed(1)); // negative = home favored
   const modelTotal  = Number(sim.avgTotal.toFixed(1));
 
-  // ── Edge vs Vegas ─────────────────────────────────────────────────────────
-  let vegHP: number|undefined, vegAP: number|undefined;
-  let edgeHome=0, edgeAway=0;
+  // Edge vs Vegas
+  let vegHP:number|undefined, vegAP:number|undefined, edgeHome=0, edgeAway=0;
   if (vegasHomeML && vegasAwayML) {
-    const rH = vegasHomeML<0 ? Math.abs(vegasHomeML)/(Math.abs(vegasHomeML)+100) : 100/(vegasHomeML+100);
-    const rA = vegasAwayML<0 ? Math.abs(vegasAwayML)/(Math.abs(vegasAwayML)+100) : 100/(vegasAwayML+100);
+    const rH=vegasHomeML<0?Math.abs(vegasHomeML)/(Math.abs(vegasHomeML)+100):100/(vegasHomeML+100);
+    const rA=vegasAwayML<0?Math.abs(vegasAwayML)/(Math.abs(vegasAwayML)+100):100/(vegasAwayML+100);
     const v=rH+rA; vegHP=rH/v; vegAP=rA/v;
-    edgeHome = Number(((homeWinProb-vegHP)*100).toFixed(1));
-    edgeAway = Number(((awayWinProb-vegAP)*100).toFixed(1));
+    edgeHome=Number(((homeWinProb-vegHP)*100).toFixed(1));
+    edgeAway=Number(((awayWinProb-vegAP)*100).toFixed(1));
   }
+  const spreadDisc = vegasSpread!==undefined?Number((modelSpread-vegasSpread).toFixed(1)):null;
+  const totalDisc  = vegasTotal!==undefined ?Number((modelTotal-vegasTotal).toFixed(1)):null;
 
-  const spreadDisc = vegasSpread!==undefined ? Number((modelSpread-vegasSpread).toFixed(1)) : null;
-  const totalDisc  = vegasTotal!==undefined  ? Number((modelTotal-vegasTotal).toFixed(1))   : null;
+  // Confidence
+  const netGap  = Math.abs(home.netRtg-away.netRtg);
+  const formGap = Math.abs(home.last10Wins-away.last10Wins);
+  const restBonus = Math.abs(homeRestDays-awayRestDays)>=2?4:0;
+  const confidence = Math.min(90,Math.max(48,50+netGap*1.8+formGap*1.2+Math.abs(homeExp-awayExp)*0.5+restBonus));
 
-  // ── Confidence ────────────────────────────────────────────────────────────
-  const netGap    = Math.abs(home.netPts - away.netPts);
-  const formGap   = Math.abs(home.last10Wins - away.last10Wins);
-  const pythGap   = Math.abs(home.pythWinPct - away.pythWinPct)*100;
-  const restBonus = Math.abs(homeRestDays-awayRestDays)>=2 ? 4 : 0;
-  const confidence = Math.min(90, Math.max(48,
-    50 + netGap*1.2 + formGap*1.4 + pythGap*0.4 + Math.abs(homeExpected-awayExpected)*0.4 + restBonus
-  ));
+  // Factors
+  const factors:any[]=[];
+  const homeFav=homeWinProb>0.5;
+  const favT=homeFav?home:away, dogT=homeFav?away:home;
 
-  // ── Factors ───────────────────────────────────────────────────────────────
-  const factors: any[] = [];
-  const homeFav = homeWinProb > 0.5;
-  const favT = homeFav ? home : away;
-  const dogT = homeFav ? away : home;
-
-  // Net scoring
-  if (netGap > 1.5) {
+  // Net rating (the most predictive single stat in NBA)
+  if (netGap>1) {
     factors.push({
-      label:`${favT.abbreviation} Scoring Edge`,
-      impact: netGap>8?'high':netGap>4?'medium':'low',
+      label:`Net Rating Edge — ${favT.abbreviation}`,
+      impact:netGap>8?'high':netGap>4?'medium':'low',
       direction:'positive',
-      value:`${favT.abbreviation} ${favT.netPts>0?'+':''}${favT.netPts.toFixed(1)} vs ${dogT.abbreviation} ${dogT.netPts>0?'+':''}${dogT.netPts.toFixed(1)} net pts/gm`,
-      description:`${favT.abbreviation} outscores opponents by ${favT.netPts.toFixed(1)} pts/game vs ${dogT.abbreviation}'s ${dogT.netPts.toFixed(1)}. Scoring: ${favT.avgPts.toFixed(1)} / allowing ~${favT.estPtsAllowed.toFixed(1)}.`,
+      value:`${favT.abbreviation} ${favT.netRtg>0?'+':''}${favT.netRtg.toFixed(1)} vs ${dogT.abbreviation} ${dogT.netRtg>0?'+':''}${dogT.netRtg.toFixed(1)}`,
+      description:`Real NBA.com net rating (opp-adjusted): ${favT.abbreviation} ${favT.netRtg>0?'+':''}${favT.netRtg.toFixed(1)} pts/100 vs ${dogT.abbreviation} ${dogT.netRtg>0?'+':''}${dogT.netRtg.toFixed(1)}. ORTG ${favT.offRtg.toFixed(1)} / DRTG ${favT.defRtg.toFixed(1)}.`,
     });
   }
 
-  // Pythagorean
-  if (pythGap > 4) {
+  // ORTG matchup
+  const ortgGap=Math.abs(home.offRtg-away.offRtg);
+  if (ortgGap>2) {
+    const betterOff=home.offRtg>away.offRtg?home:away;
     factors.push({
-      label:`Pythagorean Strength`,
-      impact: pythGap>12?'high':'medium',
-      direction:'positive',
-      value:`${favT.abbreviation} ${Math.round(favT.pythWinPct*100)}% vs ${dogT.abbreviation} ${Math.round(dogT.pythWinPct*100)}%`,
-      description:`Pythagorean win% (true team quality based on point differential): ${favT.abbreviation} ${Math.round(favT.pythWinPct*100)}% vs ${dogT.abbreviation} ${Math.round(dogT.pythWinPct*100)}%. Stronger predictor than actual W%.`,
+      label:`${betterOff.abbreviation} Offensive Efficiency`,
+      impact:ortgGap>6?'medium':'low',
+      direction:(betterOff===home)===homeFav?'positive':'negative',
+      value:`${betterOff.offRtg.toFixed(1)} ORTG (${(betterOff===home?away:home).offRtg.toFixed(1)} opp)`,
+      description:`${betterOff.abbreviation} scores ${betterOff.offRtg.toFixed(1)} pts per 100 possessions — ${ortgGap.toFixed(1)} better than opponent's ${(betterOff===home?away:home).offRtg.toFixed(1)}.`,
+    });
+  }
+
+  // DRTG matchup
+  const drtgGap=Math.abs(home.defRtg-away.defRtg);
+  if (drtgGap>2) {
+    const betterDef=home.defRtg<away.defRtg?home:away;
+    factors.push({
+      label:`${betterDef.abbreviation} Defensive Rating`,
+      impact:drtgGap>5?'medium':'low',
+      direction:(betterDef===home)===homeFav?'positive':'negative',
+      value:`${betterDef.defRtg.toFixed(1)} DRTG (allows ${drtgGap.toFixed(1)} fewer)`,
+      description:`${betterDef.abbreviation} allows ${betterDef.defRtg.toFixed(1)} pts/100 possessions — elite defense vs ${(betterDef===home?away:home).defRtg.toFixed(1)} for opponent.`,
     });
   }
 
   // Recent form
-  if (formGap >= 2) {
-    const betF = home.last10Wins>away.last10Wins?home:away;
-    const worF = betF===home?away:home;
+  if (formGap>=2) {
+    const betF=home.last10Wins>away.last10Wins?home:away;
+    const worF=betF===home?away:home;
     factors.push({
       label:`${betF.abbreviation} Recent Form`,
-      impact: formGap>=5?'high':formGap>=3?'medium':'low',
+      impact:formGap>=5?'high':formGap>=3?'medium':'low',
       direction:(betF===home)===homeFav?'positive':'negative',
       value:`L10: ${betF.last10Wins}-${10-betF.last10Wins} vs ${worF.last10Wins}-${10-worF.last10Wins}`,
-      description:`${betF.abbreviation} is ${betF.last10Wins}-${10-betF.last10Wins} in last 10 vs ${worF.abbreviation}'s ${worF.last10Wins}-${10-worF.last10Wins}.`,
+      description:`${betF.abbreviation} ${betF.last10Wins}-${10-betF.last10Wins} L10 vs ${worF.abbreviation} ${worF.last10Wins}-${10-worF.last10Wins}.`,
     });
   }
 
-  // Rest advantage
+  // Rest
   if (Math.abs(homeRestDays-awayRestDays)>=2) {
-    const moreR=homeRestDays>awayRestDays?home:away;
-    const lessR=moreR===home?away:home;
-    const lrD=moreR===home?awayRestDays:homeRestDays;
+    const mR=homeRestDays>awayRestDays?home:away;
+    const lR=mR===home?away:home;
+    const lD=mR===home?awayRestDays:homeRestDays;
     factors.push({
-      label:lrD===0?`${lessR.abbreviation} Back-to-Back`:`Rest Edge — ${moreR.abbreviation}`,
+      label:lD===0?`${lR.abbreviation} Back-to-Back`:`Rest Edge — ${mR.abbreviation}`,
       impact:'medium',
-      direction:(moreR===home)===homeFav?'positive':'negative',
-      value:lrD===0?'B2B -3.5pt penalty':`+${Math.abs(homeRestDays-awayRestDays)} days rest`,
-      description:lrD===0
-        ?`${lessR.abbreviation} on back-to-back (2nd night) — historically -3.5 pts.`
-        :`${moreR.abbreviation} has ${homeRestDays>awayRestDays?homeRestDays:awayRestDays} days rest vs ${lessR.abbreviation}'s ${lrD}.`,
+      direction:(mR===home)===homeFav?'positive':'negative',
+      value:lD===0?'B2B -3.5pts':`+${Math.abs(homeRestDays-awayRestDays)}d rest`,
+      description:lD===0
+        ?`${lR.abbreviation} on 2nd night of back-to-back (well-documented -3.5pt disadvantage).`
+        :`${mR.abbreviation} has ${homeRestDays>awayRestDays?homeRestDays:awayRestDays}d rest vs ${lR.abbreviation}'s ${lD}d.`,
     });
   }
 
   // Home/away splits
   factors.push({
-    label:'Home/Away Splits',
+    label:'Home/Away Record Splits',
     impact:'low',
     direction:homeAtHomePct>0.5?'positive':'negative',
     value:`${home.abbreviation} ${home.homeWins}-${home.homeLosses} home | ${away.abbreviation} ${away.awayWins}-${away.awayLosses} road`,
-    description:`${home.abbreviation} at home: ${home.homeWins}-${home.homeLosses} (${Math.round(homeAtHomePct*100)}%). ${away.abbreviation} on road: ${away.awayWins}-${away.awayLosses} (${Math.round(awayOnRoadPct*100)}%).`,
+    description:`${home.abbreviation} home: ${home.homeWins}-${home.homeLosses} (${Math.round(homeAtHomePct*100)}%). ${away.abbreviation} road: ${away.awayWins}-${away.awayLosses} (${Math.round(awayOnRoadPct*100)}%).`,
   });
 
-  // Model vs Vegas
+  // Model vs Vegas discrepancy
   if (spreadDisc!==null && Math.abs(spreadDisc)>=2.5) {
-    const valSide = spreadDisc<0?home.abbreviation:away.abbreviation;
+    const valSide=spreadDisc<0?home.abbreviation:away.abbreviation;
     factors.push({
-      label:`Model-Vegas Gap: ${Math.abs(spreadDisc).toFixed(1)} pts`,
+      label:`Model Disagrees with Vegas by ${Math.abs(spreadDisc).toFixed(1)} pts`,
       impact:Math.abs(spreadDisc)>5?'high':'medium',
       direction:'positive',
       value:`Model: ${home.abbreviation} ${modelSpread>0?'+':''}${modelSpread} | Vegas: ${vegasSpread}`,
-      description:`Model projects ${Math.abs(spreadDisc).toFixed(1)}-pt discrepancy. Favors ${valSide} vs posted line — potential value.`,
+      description:`Model projects a ${Math.abs(spreadDisc).toFixed(1)}-pt gap vs Vegas line — favoring ${valSide}. This is the edge signal.`,
     });
   }
 
   const reasoning = [
-    `Model v3.1 (10K Monte Carlo): ${home.abbreviation} ${homeExpected.toFixed(1)} — ${away.abbreviation} ${awayExpected.toFixed(1)}.`,
-    `Simulated ${home.abbreviation} win ${Math.round(homeWinProb*100)}% / ${away.abbreviation} ${Math.round(awayWinProb*100)}% across 10,000 iterations.`,
-    `Projected total: ${modelTotal} | Spread: ${home.abbreviation} ${modelSpread>0?'+':''}${modelSpread}.`,
-    vegasSpread!==undefined
-      ? `Vegas: ${home.abbreviation} ${vegasSpread>0?'+':''}${vegasSpread} — model ${Math.abs(spreadDisc??0)<1.5?'agrees':'DISAGREES by '+Math.abs(spreadDisc??0).toFixed(1)+' pts'}.`
-      : '',
-    `Monte Carlo: ${sim.overPct}% over ${vegasTotal??modelTotal} | ${home.abbreviation} covers ${sim.spreadCoverPct}%.`,
-    `Net pts/gm: ${home.abbreviation} ${home.netPts>0?'+':''}${home.netPts.toFixed(1)} | ${away.abbreviation} ${away.netPts>0?'+':''}${away.netPts.toFixed(1)}.`,
-    `Pythagorean: ${home.abbreviation} ${Math.round(home.pythWinPct*100)}% | ${away.abbreviation} ${Math.round(away.pythWinPct*100)}%.`,
-    homeRestDays===0?`${home.abbreviation} back-to-back.`:awayRestDays===0?`${away.abbreviation} back-to-back.`:'',
+    `Model v4 (10K Monte Carlo + NBA.com ratings): ${home.abbreviation} ${homeExp.toFixed(1)} — ${away.abbreviation} ${awayExp.toFixed(1)}.`,
+    `Monte Carlo win probability: ${home.abbreviation} ${Math.round(homeWinProb*100)}% / ${away.abbreviation} ${Math.round(awayWinProb*100)}% (10,000 iterations).`,
+    `Model spread: ${home.abbreviation} ${modelSpread>0?'+':''}${modelSpread} | Model total: ${modelTotal}.`,
+    vegasSpread!==undefined?`Vegas: ${home.abbreviation} ${vegasSpread>0?'+':''}${vegasSpread} — model ${Math.abs(spreadDisc??0)<1.5?'aligned':'DISAGREES by '+Math.abs(spreadDisc??0).toFixed(1)+' pts'}.`:'',
+    `NBA.com net ratings: ${home.abbreviation} ${home.netRtg>0?'+':''}${home.netRtg.toFixed(1)} | ${away.abbreviation} ${away.netRtg>0?'+':''}${away.netRtg.toFixed(1)}.`,
+    `Pythagorean win%: ${home.abbreviation} ${Math.round(home.pythWinPct*100)}% / ${away.abbreviation} ${Math.round(away.pythWinPct*100)}%.`,
+    `L10: ${home.abbreviation} ${home.last10Wins}-${10-home.last10Wins} | ${away.abbreviation} ${away.last10Wins}-${10-away.last10Wins}.`,
+    `Monte Carlo: ${sim.overPct}% over ${vegasTotal??modelTotal} | ${home.abbreviation} covers ${sim.spreadCoverPct}% of simulations.`,
+    homeRestDays===0?`${home.abbreviation} on back-to-back.`:awayRestDays===0?`${away.abbreviation} on back-to-back.`:'',
   ].filter(Boolean).join(' ');
 
-  return {
-    homeWinProb, awayWinProb, modelSpread, modelTotal,
-    vegHP, vegAP, edgeHome, edgeAway,
-    confidence:Math.round(confidence),
-    factors:factors.slice(0,5), reasoning,
-    spreadDisc, totalDisc,
-    homeFinal: Number(homeExpected.toFixed(1)),
-    awayFinal: Number(awayExpected.toFixed(1)),
-    sim,
-  };
+  return { homeWinProb, awayWinProb, modelSpread, modelTotal, edgeHome, edgeAway,
+    confidence:Math.round(confidence), factors:factors.slice(0,5), reasoning,
+    spreadDisc, totalDisc, homeFinal:Number(homeExp.toFixed(1)), awayFinal:Number(awayExp.toFixed(1)), sim };
 }
 
 export async function buildNBAPrediction(
@@ -426,91 +457,82 @@ export async function buildNBAPrediction(
   vegasHomeML?:number, vegasAwayML?:number,
   vegasSpread?:number, vegasTotal?:number,
   homeInjury?:TeamInjuryImpact, awayInjury?:TeamInjuryImpact,
-): Promise<{prediction:any; homeProfile:TeamProfile|null; awayProfile:TeamProfile|null}> {
+): Promise<{prediction:any;homeProfile:TeamProfile|null;awayProfile:TeamProfile|null}> {
 
-  const [homeProfile, awayProfile] = await Promise.all([
-    fetchProfile(homeAbbr), fetchProfile(awayAbbr),
-  ]);
+  const [hp, ap] = await Promise.all([fetchProfile(homeAbbr), fetchProfile(awayAbbr)]);
 
-  if (!homeProfile || !awayProfile) {
-    let hp=0.5, ap=0.5;
+  if (!hp || !ap) {
+    let hwp=0.5, awp=0.5;
     if (vegasHomeML && vegasAwayML) {
       const rH=vegasHomeML<0?Math.abs(vegasHomeML)/(Math.abs(vegasHomeML)+100):100/(vegasHomeML+100);
       const rA=vegasAwayML<0?Math.abs(vegasAwayML)/(Math.abs(vegasAwayML)+100):100/(vegasAwayML+100);
-      const v=rH+rA; hp=rH/v; ap=rA/v;
+      const v=rH+rA; hwp=rH/v; awp=rA/v;
     }
-    return { homeProfile, awayProfile, prediction:{
-      id:'pred-fallback', modelVersion:'v3.1',
-      predictedWinner:hp>0.5?homeAbbr.toLowerCase():awayAbbr.toLowerCase(),
-      winProbHome:hp, winProbAway:ap,
+    return { homeProfile:hp, awayProfile:ap, prediction:{
+      id:'pred-fallback', modelVersion:'v4.0',
+      predictedWinner:hwp>0.5?homeAbbr.toLowerCase():awayAbbr.toLowerCase(),
+      winProbHome:hwp, winProbAway:awp,
       projectedTotal:vegasTotal??224, projectedSpread:vegasSpread??0,
-      confidenceScore:50, fairOddsHome:winProbToML(hp), fairOddsAway:winProbToML(ap),
+      confidenceScore:50, fairOddsHome:winProbToML(hwp), fairOddsAway:winProbToML(awp),
       edgeHome:0, edgeAway:0, modelVsVegasSpread:null, modelVsVegasTotal:null,
       supportingFactors:[], riskFactors:[],
-      reasoning:'Team stats unavailable — Vegas lines used as reference.',
+      reasoning:`Team stats unavailable — using Vegas lines. ${!hp?homeAbbr:''}${!ap?' and '+awayAbbr:''} profile missing.`,
       createdAt:new Date().toISOString(),
     }};
   }
 
-  // Apply injury deductions
+  // Injury deductions to avgPts and derived ratings
   if (homeInjury?.pointsLost > 0) {
-    homeProfile.avgPts        = Math.max(90, homeProfile.avgPts - homeInjury.pointsLost);
-    homeProfile.netPts        = homeProfile.avgPts - homeProfile.estPtsAllowed;
-    homeProfile.pythWinPct    = Math.pow(homeProfile.avgPts,13.91)/(Math.pow(homeProfile.avgPts,13.91)+Math.pow(homeProfile.estPtsAllowed,13.91));
-    console.log(`[Model v3.1] ${homeAbbr} inj adj -${homeInjury.pointsLost.toFixed(0)}: ${homeInjury.description}`);
+    hp.avgPts = Math.max(90, hp.avgPts - homeInjury.pointsLost);
+    hp.offRtg = Math.max(90, hp.offRtg - homeInjury.pointsLost*0.85);
+    hp.netRtg = hp.offRtg - hp.defRtg;
+    hp.pythWinPct = Math.pow(hp.avgPts,13.91)/(Math.pow(hp.avgPts,13.91)+Math.pow(hp.defRtg*hp.pace/100,13.91));
+    console.log(`[Model v4] ${homeAbbr} inj -${homeInjury.pointsLost.toFixed(0)}pts: ${homeInjury.description}`);
   }
   if (awayInjury?.pointsLost > 0) {
-    awayProfile.avgPts        = Math.max(90, awayProfile.avgPts - awayInjury.pointsLost);
-    awayProfile.netPts        = awayProfile.avgPts - awayProfile.estPtsAllowed;
-    awayProfile.pythWinPct    = Math.pow(awayProfile.avgPts,13.91)/(Math.pow(awayProfile.avgPts,13.91)+Math.pow(awayProfile.estPtsAllowed,13.91));
-    console.log(`[Model v3.1] ${awayAbbr} inj adj -${awayInjury.pointsLost.toFixed(0)}: ${awayInjury.description}`);
+    ap.avgPts = Math.max(90, ap.avgPts - awayInjury.pointsLost);
+    ap.offRtg = Math.max(90, ap.offRtg - awayInjury.pointsLost*0.85);
+    ap.netRtg = ap.offRtg - ap.defRtg;
+    ap.pythWinPct = Math.pow(ap.avgPts,13.91)/(Math.pow(ap.avgPts,13.91)+Math.pow(ap.defRtg*ap.pace/100,13.91));
+    console.log(`[Model v4] ${awayAbbr} inj -${awayInjury.pointsLost.toFixed(0)}pts: ${awayInjury.description}`);
   }
 
-  const model = compute(homeProfile, awayProfile, vegasHomeML, vegasAwayML, vegasSpread, vegasTotal);
+  const model = compute(hp, ap, vegasHomeML, vegasAwayML, vegasSpread, vegasTotal);
 
-  const prediction: any = {
-    id:`pred-nba-model`,
-    modelVersion:'v3.1',
-    predictedWinner: model.homeWinProb>0.5?homeAbbr.toLowerCase():awayAbbr.toLowerCase(),
-    winProbHome:  Number(model.homeWinProb.toFixed(3)),
-    winProbAway:  Number(model.awayWinProb.toFixed(3)),
-    projectedTotal:  model.modelTotal,
-    projectedSpread: model.modelSpread,
-    projectedHomeScore: model.homeFinal,
-    projectedAwayScore: model.awayFinal,
-    confidenceScore: model.confidence,
-    fairOddsHome: winProbToML(model.homeWinProb),
-    fairOddsAway: winProbToML(model.awayWinProb),
-    edgeHome: model.edgeHome,
-    edgeAway: model.edgeAway,
-    modelVsVegasSpread: model.spreadDisc,
-    modelVsVegasTotal:  model.totalDisc,
-    monteCarlo: model.sim,  // full simulation results
-    supportingFactors: model.factors,
-    riskFactors: [],
-    reasoning: model.reasoning,
-    createdAt: new Date().toISOString(),
+  const prediction:any = {
+    id:`pred-nba-model`, modelVersion:'v4.0',
+    predictedWinner:model.homeWinProb>0.5?homeAbbr.toLowerCase():awayAbbr.toLowerCase(),
+    winProbHome:Number(model.homeWinProb.toFixed(3)),
+    winProbAway:Number(model.awayWinProb.toFixed(3)),
+    projectedTotal:model.modelTotal,
+    projectedSpread:model.modelSpread,
+    projectedHomeScore:model.homeFinal,
+    projectedAwayScore:model.awayFinal,
+    confidenceScore:model.confidence,
+    fairOddsHome:winProbToML(model.homeWinProb),
+    fairOddsAway:winProbToML(model.awayWinProb),
+    edgeHome:model.edgeHome, edgeAway:model.edgeAway,
+    modelVsVegasSpread:model.spreadDisc,
+    modelVsVegasTotal:model.totalDisc,
+    monteCarlo:model.sim,
+    supportingFactors:model.factors,
+    riskFactors:[], reasoning:model.reasoning,
+    createdAt:new Date().toISOString(),
+    // Raw ratings for transparency
+    homeNBAStats:{ offRtg:hp.offRtg, defRtg:hp.defRtg, netRtg:hp.netRtg, pace:hp.pace },
+    awayNBAStats:{ offRtg:ap.offRtg, defRtg:ap.defRtg, netRtg:ap.netRtg, pace:ap.pace },
   };
 
-  // Injury factors prepended
-  if (homeInjury?.pointsLost >= 4) {
-    prediction.supportingFactors.unshift({
-      label:`⚠ ${homeAbbr} Injuries`,
-      impact:homeInjury.pointsLost>=8?'high':'medium',
-      direction:'negative',
-      value:`−${homeInjury.pointsLost.toFixed(0)} PPG impact`,
-      description:homeInjury.description,
-    });
-  }
-  if (awayInjury?.pointsLost >= 4) {
-    prediction.supportingFactors.unshift({
-      label:`⚠ ${awayAbbr} Injuries`,
-      impact:awayInjury.pointsLost>=8?'high':'medium',
-      direction:'negative',
-      value:`−${awayInjury.pointsLost.toFixed(0)} PPG impact`,
-      description:awayInjury.description,
-    });
-  }
+  if (homeInjury?.pointsLost>=4) prediction.supportingFactors.unshift({
+    label:`⚠ ${homeAbbr} Injuries`,
+    impact:homeInjury.pointsLost>=8?'high':'medium', direction:'negative',
+    value:`−${homeInjury.pointsLost.toFixed(0)} PPG`, description:homeInjury.description,
+  });
+  if (awayInjury?.pointsLost>=4) prediction.supportingFactors.unshift({
+    label:`⚠ ${awayAbbr} Injuries`,
+    impact:awayInjury.pointsLost>=8?'high':'medium', direction:'negative',
+    value:`−${awayInjury.pointsLost.toFixed(0)} PPG`, description:awayInjury.description,
+  });
   prediction.supportingFactors = prediction.supportingFactors.slice(0,5);
-  return { prediction, homeProfile, awayProfile };
+  return { prediction, homeProfile:hp, awayProfile:ap };
 }
