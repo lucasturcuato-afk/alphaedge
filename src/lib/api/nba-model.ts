@@ -1,4 +1,4 @@
-// src/lib/api/nba-model.ts â Model v4.1
+// src/lib/api/nba-model.ts -- Model v4.1
 // Uses stats.nba.com for real opponent-adjusted ORTG/DRTG/NetRtg/Pace
 // ESPN for schedule, splits, rest days
 // Monte Carlo simulation for spread/total distribution
@@ -256,43 +256,43 @@ function compute(
   vegasSpread?: number,
   vegasTotal?: number,
 ) {
-  // ââ v4.1 SCORE PROJECTION â additive opponent-adjusted (industry standard) ââ
+  //  v4.1 SCORE PROJECTION -- additive opponent-adjusted (industry standard) 
   //
-  // Formula: expected_pts = (team_ORTG + opp_DRTG) / 2  Ã  (avg_pace / 100)
+  // Formula: expected_pts = (team_ORTG + opp_DRTG) / 2  x  (avg_pace / 100)
   //
   // This is the FiveThirtyEight / Dunks & Threes standard. It naturally
-  // regresses to league average (ORTG â DRTG â 115.8) and cannot compound
+  // regresses to league average (ORTG  DRTG  115.8) and cannot compound
   // small rating differences into unrealistic spreads like a multiplicative
   // formula does.
   //
-  // Example â ATL (ORTG 115.2, DRTG 118.1) @ ORL (ORTG 112.4, DRTG 111.8):
+  // Example -- ATL (ORTG 115.2, DRTG 118.1) @ ORL (ORTG 112.4, DRTG 111.8):
   //   avgPace  = (100.8 + 96.8) / 2 = 98.8
-  //   ORL base = (112.4 + 118.1) / 2 Ã 0.988 = 113.9 pts
-  //   ATL base = (115.2 + 111.8) / 2 Ã 0.988 = 112.1 pts
-  //   spread   = ORL -1.8  |  total = ~226   â realistic
+  //   ORL base = (112.4 + 118.1) / 2 x 0.988 = 113.9 pts
+  //   ATL base = (115.2 + 111.8) / 2 x 0.988 = 112.1 pts
+  //   spread   = ORL -1.8  |  total = ~226   <- realistic
 
   const avgPace   = (home.pace + away.pace) / 2;
   const paceFactor = avgPace / 100;
   const homeBase  = ((home.offRtg + away.defRtg) / 2) * paceFactor;
   const awayBase  = ((away.offRtg + home.defRtg) / 2) * paceFactor;
 
-  // ââ Situational adjustments â individually capped to prevent stacking ââ
+  //  Situational adjustments -- individually capped to prevent stacking 
   const HOME_COURT = 3.2;
   const homeRestDays_ = restDays(home.lastGameDate);
   const awayRestDays_ = restDays(away.lastGameDate);
   const homeRest = restAdj(homeRestDays_);
   const awayRest = restAdj(awayRestDays_);
-  // Recent form: max Â±3 pts
+  // Recent form: max +/-3 pts
   const homeFormAdj = Math.max(-3, Math.min(3, (home.last10Wins - 5) * 0.5));
   const awayFormAdj = Math.max(-3, Math.min(3, (away.last10Wins - 5) * 0.5));
-  // Home/away splits: max Â±2 pts
+  // Home/away splits: max +/-2 pts
   const homeAtHomeGP  = (home.homeWins + home.homeLosses) || 1;
   const awayOnRoadGP  = (away.awayWins + away.awayLosses) || 1;
   const homeAtHomePct = home.homeWins / homeAtHomeGP;
   const awayOnRoadPct = away.awayWins / awayOnRoadGP;
   const homeSplit = Math.max(-2, Math.min(2, (homeAtHomePct - home.winPct) * 4));
   const awaySplit = Math.max(-2, Math.min(2, (awayOnRoadPct - away.winPct) * 4));
-  // Pythagorean talent signal: max Â±1.5 pts
+  // Pythagorean talent signal: max +/-1.5 pts
   const homePyth = Math.max(-1.5, Math.min(1.5, (home.pythWinPct - home.winPct) * 3));
   const awayPyth = Math.max(-1.5, Math.min(1.5, (away.pythWinPct - away.winPct) * 3));
 
@@ -334,7 +334,7 @@ function compute(
 
   if (netGap > 1) {
     factors.push({
-      label: `Net Rating Edge â ${favT.abbreviation}`,
+      label: `Net Rating Edge -- ${favT.abbreviation}`,
       impact: netGap > 8 ? 'high' : netGap > 4 ? 'medium' : 'low',
       direction: 'positive',
       value: `${favT.abbreviation} ${favT.netRtg > 0 ? '+' : ''}${favT.netRtg.toFixed(1)} vs ${dogT.abbreviation} ${dogT.netRtg > 0 ? '+' : ''}${dogT.netRtg.toFixed(1)}`,
@@ -349,7 +349,7 @@ function compute(
       impact: ortgGap > 6 ? 'medium' : 'low',
       direction: (betterOff === home) === homeFav ? 'positive' : 'negative',
       value: `${betterOff.offRtg.toFixed(1)} ORTG (${(betterOff === home ? away : home).offRtg.toFixed(1)} opp)`,
-      description: `${betterOff.abbreviation} scores ${betterOff.offRtg.toFixed(1)} pts per 100 possessions â ${ortgGap.toFixed(1)} better than opponent.`,
+      description: `${betterOff.abbreviation} scores ${betterOff.offRtg.toFixed(1)} pts per 100 possessions -- ${ortgGap.toFixed(1)} better than opponent.`,
     });
   }
   const drtgGap = Math.abs(home.defRtg - away.defRtg);
@@ -360,7 +360,7 @@ function compute(
       impact: drtgGap > 5 ? 'medium' : 'low',
       direction: (betterDef === home) === homeFav ? 'positive' : 'negative',
       value: `${betterDef.defRtg.toFixed(1)} DRTG (allows ${drtgGap.toFixed(1)} fewer)`,
-      description: `${betterDef.abbreviation} allows ${betterDef.defRtg.toFixed(1)} pts/100 â ${(betterDef === home ? away : home).defRtg.toFixed(1)} for opponent.`,
+      description: `${betterDef.abbreviation} allows ${betterDef.defRtg.toFixed(1)} pts/100 -- ${(betterDef === home ? away : home).defRtg.toFixed(1)} for opponent.`,
     });
   }
   if (formGap >= 2) {
@@ -379,7 +379,7 @@ function compute(
     const lR = mR === home ? away : home;
     const lD = mR === home ? awayRestDays_ : homeRestDays_;
     factors.push({
-      label: lD === 0 ? `${lR.abbreviation} Back-to-Back` : `Rest Edge â ${mR.abbreviation}`,
+      label: lD === 0 ? `${lR.abbreviation} Back-to-Back` : `Rest Edge -- ${mR.abbreviation}`,
       impact: 'medium',
       direction: (mR === home) === homeFav ? 'positive' : 'negative',
       value: lD === 0 ? 'B2B -3.5pts' : `+${Math.abs(homeRestDays_ - awayRestDays_)}d rest`,
@@ -402,15 +402,15 @@ function compute(
       impact: Math.abs(spreadDisc) > 5 ? 'high' : 'medium',
       direction: 'positive',
       value: `Model: ${home.abbreviation} ${modelSpread > 0 ? '+' : ''}${modelSpread} | Vegas: ${vegasSpread}`,
-      description: `Model projects a ${Math.abs(spreadDisc).toFixed(1)}-pt gap vs Vegas line â favoring ${valSide}.`,
+      description: `Model projects a ${Math.abs(spreadDisc).toFixed(1)}-pt gap vs Vegas line -- favoring ${valSide}.`,
     });
   }
 
   const reasoning = [
-    `Model v4.1 (10K Monte Carlo + NBA.com ratings): ${home.abbreviation} ${homeExp.toFixed(1)} â ${away.abbreviation} ${awayExp.toFixed(1)}.`,
+    `Model v4.1 (10K Monte Carlo + NBA.com ratings): ${home.abbreviation} ${homeExp.toFixed(1)} -- ${away.abbreviation} ${awayExp.toFixed(1)}.`,
     `Monte Carlo win probability: ${home.abbreviation} ${Math.round(homeWinProb * 100)}% / ${away.abbreviation} ${Math.round(awayWinProb * 100)}% (10,000 iterations).`,
     `Model spread: ${home.abbreviation} ${modelSpread > 0 ? '+' : ''}${modelSpread} | Model total: ${modelTotal}.`,
-    vegasSpread !== undefined ? `Vegas: ${home.abbreviation} ${vegasSpread > 0 ? '+' : ''}${vegasSpread} â model ${Math.abs(spreadDisc ?? 0) < 1.5 ? 'aligned' : 'DISAGREES by ' + Math.abs(spreadDisc ?? 0).toFixed(1) + ' pts'}.` : '',
+    vegasSpread !== undefined ? `Vegas: ${home.abbreviation} ${vegasSpread > 0 ? '+' : ''}${vegasSpread} -- model ${Math.abs(spreadDisc ?? 0) < 1.5 ? 'aligned' : 'DISAGREES by ' + Math.abs(spreadDisc ?? 0).toFixed(1) + ' pts'}.` : '',
     `NBA.com net ratings: ${home.abbreviation} ${home.netRtg > 0 ? '+' : ''}${home.netRtg.toFixed(1)} | ${away.abbreviation} ${away.netRtg > 0 ? '+' : ''}${away.netRtg.toFixed(1)}.`,
     `Pythagorean win%: ${home.abbreviation} ${Math.round(home.pythWinPct * 100)}% / ${away.abbreviation} ${Math.round(away.pythWinPct * 100)}%.`,
     `L10: ${home.abbreviation} ${home.last10Wins}-${10 - home.last10Wins} | ${away.abbreviation} ${away.last10Wins}-${10 - away.last10Wins}.`,
@@ -462,7 +462,7 @@ export async function buildNBAPrediction(
         edgeHome: 0, edgeAway: 0,
         modelVsVegasSpread: null, modelVsVegasTotal: null,
         supportingFactors: [], riskFactors: [],
-        reasoning: `Team stats unavailable â using Vegas lines. ${!hp ? homeAbbr : ''}${!ap ? ' and ' + awayAbbr : ''} profile missing.`,
+        reasoning: `Team stats unavailable -- using Vegas lines. ${!hp ? homeAbbr : ''}${!ap ? ' and ' + awayAbbr : ''} profile missing.`,
         createdAt: new Date().toISOString(),
       },
     };
@@ -512,17 +512,17 @@ export async function buildNBAPrediction(
   };
 
   if (homeInjury && homeInjury.pointsLost >= 4) prediction.supportingFactors.unshift({
-    label: `â  ${homeAbbr} Injuries`,
+    label: `Warning ${homeAbbr} Injuries`,
     impact: homeInjury.pointsLost >= 8 ? 'high' : 'medium',
     direction: 'negative',
-    value: `â${homeInjury.pointsLost?.toFixed(0)} PPG`,
+    value: `-${homeInjury.pointsLost?.toFixed(0)} PPG`,
     description: homeInjury.description,
   });
   if (awayInjury && awayInjury.pointsLost >= 4) prediction.supportingFactors.unshift({
-    label: `â  ${awayAbbr} Injuries`,
+    label: `Warning ${awayAbbr} Injuries`,
     impact: awayInjury.pointsLost >= 8 ? 'high' : 'medium',
     direction: 'negative',
-    value: `â${awayInjury.pointsLost?.toFixed(0)} PPG`,
+    value: `-${awayInjury.pointsLost?.toFixed(0)} PPG`,
     description: awayInjury.description,
   });
 
