@@ -3,7 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTodayAllGames } from "@/lib/api/aggregator";
 import { generateAllLiveProps } from "@/lib/api/live-props";
 
-export const revalidate = 300;
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 export async function GET(req: NextRequest) {
   try {
